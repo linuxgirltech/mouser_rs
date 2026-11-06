@@ -11,7 +11,7 @@
 
 use std::path::PathBuf;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::types::{
     ButtonAction, Color, ColorDepth, DeviceType, Dpi, LedMode, ModelId, ResolutionCaps,
 };
@@ -47,15 +47,25 @@ impl Device {
 
     /// Bounds-check and return `Error::NoSuchIndex` with kind `"profile"`.
     pub fn profile(&self, index: u32) -> Result<&Profile> {
-        todo!()
+        self.profiles
+            .get(index as usize)
+            .ok_or(Error::NoSuchIndex {
+                kind: "profile",
+                index,
+            })
     }
 
     pub fn profile_mut(&mut self, index: u32) -> Result<&mut Profile> {
-        todo!()
+        self.profiles
+            .get_mut(index as usize)
+            .ok_or(Error::NoSuchIndex { 
+                kind: "profile", 
+                index 
+            })
     }
 
     pub fn active_profile(&self) -> Option<&Profile> {
-        todo!()
+        self.profiles.iter().find(|profile| profile.is_active)
     }
 
     /// Make `index` active and clear the flag elsewhere.
@@ -63,17 +73,27 @@ impl Device {
     /// Exactly one profile is active at all times, so this moves the flag
     /// rather than ever clearing the last one.
     pub fn set_active_profile(&mut self, index: u32) -> Result<()> {
-        todo!()
+        if index as usize >= self.profiles.len() {
+            return Err(Error::NoSuchIndex { kind: "profile", index });
+        }
+
+        for (i, profile) in self.profiles.iter_mut().enumerate() {
+            profile.is_active = i as u32 == index;
+        }
+
+        Ok(())
     }
 
     /// True when any profile has unwritten changes.
     pub fn is_dirty(&self) -> bool {
-        todo!()
+        self.profiles.iter().any(|profile| profile.is_dirty)
     }
 
     /// Clear every dirty flag. Called after a successful commit.
     pub fn clear_dirty(&mut self) {
-        todo!()
+        for profile in &mut self.profiles {
+            profile.is_dirty = false;
+        }
     }
 }
 
@@ -127,49 +147,127 @@ impl Profile {
     }
 
     pub fn resolution(&self, index: u32) -> Result<&Resolution> {
-        todo!()
+        self.resolutions
+            .get(index as usize)
+            .ok_or(Error::NoSuchIndex { 
+                kind: "resolution", 
+                index 
+            })
     }
 
     pub fn resolution_mut(&mut self, index: u32) -> Result<&mut Resolution> {
-        todo!()
+        self.resolutions
+            .get_mut(index as usize)
+            .ok_or(Error::NoSuchIndex { 
+                kind: "resolution", 
+                index 
+            })
     }
 
     pub fn button(&self, index: u32) -> Result<&Button> {
-        todo!()
+        self.buttons
+            .get(index as usize)
+            .ok_or(Error::NoSuchIndex { 
+                kind: "button", 
+                index 
+            })
     }
 
     pub fn button_mut(&mut self, index: u32) -> Result<&mut Button> {
-        todo!()
+        self.buttons
+            .get_mut(index as usize)
+            .ok_or(Error::NoSuchIndex { 
+                kind: "button", 
+                index 
+            })
     }
 
     pub fn led(&self, index: u32) -> Result<&Led> {
-        todo!()
+        self.leds
+            .get(index as usize)
+            .ok_or(Error::NoSuchIndex { 
+                kind: "led", 
+                index 
+            })
     }
 
     pub fn led_mut(&mut self, index: u32) -> Result<&mut Led> {
-        todo!()
+        self.leds
+            .get_mut(index as usize)
+            .ok_or(Error::NoSuchIndex { 
+                kind: "led", 
+                index 
+            })
     }
 
     /// Move the active flag to `index`. At least one resolution is always
     /// active, so this never clears the last one.
     pub fn set_active_resolution(&mut self, index: u32) -> Result<()> {
-        todo!()
+        if index as usize >= self.resolutions.len() {
+            return Err(Error::NoSuchIndex { 
+                kind: "resolution", 
+                index 
+            })
+        }
+
+        for (i, res) in self.resolutions.iter_mut().enumerate() {
+            res.is_active = i as u32 == index;
+        }
+
+        self.is_dirty = true;
+
+        Ok(())
     }
 
     /// Move the default flag to `index`. Same invariant as above.
     pub fn set_default_resolution(&mut self, index: u32) -> Result<()> {
-        todo!()
+        if index as usize >= self.resolutions.len() {
+            return Err(Error::NoSuchIndex { 
+                kind: "resolution", 
+                index 
+            })
+        }
+
+        for (i, res) in self.resolutions.iter_mut().enumerate() {
+            res.is_default = i as u32 == index;
+        }
+
+        self.is_dirty = true;
+
+        Ok(())
     }
 
     /// Check `rate` against `report_rates` before storing, and mark dirty.
     /// `Error::Unsupported` when the list is empty.
     pub fn set_report_rate(&mut self, rate: u32) -> Result<()> {
-        todo!()
+        if self.report_rates.is_empty() {
+            return Err(Error::Unsupported("Report Rate"));
+        }
+
+        if !self.report_rates.contains(&rate) {
+            return Err(Error::invalid("ReportRate", format!("`{rate}` is not one of `{:?}`", self.report_rates)));
+        }
+
+        self.report_rate = rate;
+        self.is_dirty = true;
+
+        Ok(())
     }
 
     /// Check `ms` against `debounces` before storing, and mark dirty.
     pub fn set_debounce(&mut self, ms: i32) -> Result<()> {
-        todo!()
+        if self.debounces.is_empty() {
+            return Err(Error::Unsupported("Debounce"));
+        }
+
+        if ms < 0 || !self.debounces.contains(&(ms as u32)) {
+            return Err(Error::invalid("Debounce", format!("`{ms}` is not one of `{:?}`", self.debounces)))
+        }
+
+        self.debounce = ms;
+        self.is_dirty = true;
+
+        Ok(())
     }
 }
 
@@ -206,7 +304,25 @@ impl Resolution {
     /// `Separate` value when `caps.separate_xy` is unset, and any axis not in
     /// `dpis` when that list is non-empty.
     pub fn set_dpi(&mut self, dpi: Dpi) -> Result<()> {
-        todo!()
+        if !self.dpi.same_shape(dpi) {
+            return Err(Error::invalid("Resolution", "cannot change between a single dpi and a per-axis pair"))
+        }
+
+        if matches!(dpi, Dpi::Separate { .. }) && !self.caps.separate_xy {
+            return Err(Error::Unsupported("Seperate X/Y Resolution"));
+        }
+
+        if !self.dpis.is_empty() {
+            for v in [dpi.x(), dpi.y()] {
+                if !self.dpis.contains(&v) {
+                    return Err(Error::invalid("Resolution", format!("`{v}` dpi is not a permitted value"),));
+                }
+            }
+        }
+
+        self.dpi = dpi;
+
+        Ok(())
     }
 }
 
@@ -234,7 +350,19 @@ impl Button {
     /// Store a binding, rejecting types absent from `action_types` and macros
     /// longer than `macro_length`.
     pub fn set_action(&mut self, action: ButtonAction) -> Result<()> {
-        todo!()
+        let wanted = action.action_type() as u32;
+
+        if !self.action_types.contains(&wanted) {
+            return Err(Error::invalid("Mapping", format!("button {} does not support action type `{wanted}`", self.index)));
+        }
+
+        if let ButtonAction::Macro(events) = &action && self.macro_length > 0 && events.len() as u32 > self.macro_length {
+            return Err(Error::invalid("Mapping", format!("macro of {} events exceeds the device limit of {}", events.len(), self.macro_length)))
+        }
+
+        self.action = action;
+
+        Ok(())
     }
 }
 
@@ -272,21 +400,43 @@ impl Led {
 
     /// Reject modes absent from `modes`.
     pub fn set_mode(&mut self, mode: LedMode) -> Result<()> {
-        todo!()
+        if !self.modes.contains(&(mode as u32)) {
+            return Err(Error::invalid("Mode", format!("LED {} does not support mode {}", self.index, mode as u32)));
+        }
+
+        self.mode = mode;
+        
+        Ok(())
     }
 
     /// Reject colours failing `Color::validate` for `color_depth`.
     pub fn set_color(&mut self, color: Color) -> Result<()> {
-        todo!()
+        color.validate(self.color_depth)?;
+
+        self.color = color;
+        
+        Ok(())
     }
 
     /// Reject anything above `MAX_EFFECT_DURATION`.
     pub fn set_effect_duration(&mut self, ms: u32) -> Result<()> {
-        todo!()
+        if ms > Self::MAX_EFFECT_DURATION {
+            return Err(Error::invalid("effect_duration", format!("`{ms}`ms exceeds the maximum of {}", Self::MAX_EFFECT_DURATION)));
+        }
+
+        self.effect_duration = ms;
+
+        Ok(())
     }
 
     /// Reject anything above `MAX_BRIGHTNESS`.
     pub fn set_brightness(&mut self, value: u32) -> Result<()> {
-        todo!()
+        if value > 255 {
+            return Err(Error::invalid("Brightness", format!("`{value}` is outside the range 0-255")));
+        }
+
+        self.brightness = value;
+
+        Ok(())
     }
 }

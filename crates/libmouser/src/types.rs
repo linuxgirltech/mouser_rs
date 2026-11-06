@@ -22,7 +22,11 @@ pub enum BusType {
 impl BusType {
     /// The token used in `DeviceMatch=` lines and in `Device.Model` strings.
     pub fn from_token(token: &str) -> Self {
-        todo!("map \"usb\" / \"bluetooth\" onto the variants, everything else Unknown")
+        match token {
+            "usb" => BusType::Usb,
+            "bluetooth" => BusType::Bluetooth,
+            _ => BusType::Unknown,
+        }
     }
 
     pub fn as_token(self) -> &'static str {
@@ -37,7 +41,11 @@ impl BusType {
     ///
     /// `linux/input.h`: `BUS_USB = 0x03`, `BUS_BLUETOOTH = 0x05`.
     pub fn from_hid_bus(bustype: u32) -> Self {
-        todo!("match the BUS_* constants above")
+        match bustype {
+            0x03 => BusType::Usb,
+            0x05 => BusType::Bluetooth,
+            _ => BusType::Unknown,
+        }
     }
 }
 
@@ -81,7 +89,10 @@ impl fmt::Display for ModelId {
         // `unknown` when the bus is unknown, else
         // bus token, 4-digit lowercase hex vendor, 4-digit lowercase hex
         // product, decimal version — colon-separated.
-        todo!()
+        if self.bus == BusType::Unknown {
+            return f.write_str("unknown");
+        }
+        write!(f, "{}:{:04x}:{:04x}:{}", self.bus.as_token(), self.vendor, self.product, self.version)
     }
 }
 
@@ -98,7 +109,12 @@ impl FromStr for DeviceType {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self> {
-        todo!("accept \"mouse\" / \"keyboard\" / \"other\", else Error::invalid")
+        match s {
+            "mouse" => Ok(DeviceType::Mouse),
+            "keyboard" => Ok(DeviceType::Keyboard),
+            "other" => Ok(DeviceType::Other), 
+            other => Err(Error::invalid("DeviceType", format!("unknown `{other}`"))),
+        }
     }
 }
 
@@ -121,7 +137,17 @@ impl ResolutionCaps {
 
     /// Render as the `au` array `Resolution.Capabilities` exports.
     pub fn to_wire(self) -> Vec<u32> {
-        todo!("push SEPARATE_XY and/or DISABLE for whichever flags are set")
+        let mut v = Vec::new();
+        
+        if self.separate_xy {
+            v.push(Self::SEPARATE_XY);
+        }
+
+        if self.disable {
+            v.push(Self::DISABLE);
+        }
+
+        v
     }
 }
 
@@ -138,17 +164,26 @@ pub enum Dpi {
 
 impl Dpi {
     pub fn x(self) -> u32 {
-        todo!()
+        match self {
+            Dpi::Single(x) => x,
+            Dpi::Separate { x, .. } => x,
+        }
     }
 
     pub fn y(self) -> u32 {
-        todo!()
+        match self {
+            Dpi::Single(y) => y,
+            Dpi::Separate { y, .. } => y, 
+        }
     }
 
     /// True when both values describe the same variant shape. The D-Bus layer
     /// checks this before accepting a write.
     pub fn same_shape(self, other: Dpi) -> bool {
-        todo!()
+        matches!(
+            (self, other),
+            (Dpi::Single(_), Dpi::Single(_)) | (Dpi::Separate { .. }, Dpi::Separate{ .. })
+        )
     }
 }
 
@@ -168,7 +203,14 @@ impl ActionType {
     /// Anything unrecognised becomes `Unknown` — clients must ignore action
     /// types they do not know, and so must we.
     pub fn from_wire(value: u32) -> Self {
-        todo!()
+        match value {
+            0 => ActionType::None,
+            1 => ActionType::Button,
+            2 => ActionType::Special,
+            3 => ActionType::Key,
+            4 => ActionType::Macro,
+            _ => ActionType::Unknown,
+        }
     }
 }
 
@@ -202,7 +244,29 @@ impl SpecialAction {
 
     /// `None` for a value this build does not know.
     pub fn from_wire(value: u32) -> Option<Self> {
-        todo!()
+        use SpecialAction::*;
+        Some(match value {
+            0x4000_0000 => Unknown,
+            0x4000_0001 => DoubleClick,
+            0x4000_0002 => WheelLeft,
+            0x4000_0003 => WheelRight,
+            0x4000_0004 => WheelUp,
+            0x4000_0005 => WheelDown,
+            0x4000_0006 => RatchetModeSwitch,
+            0x4000_0007 => ResolutionCycleUp,
+            0x4000_0008 => ResolutionCycleDown,
+            0x4000_0009 => ResolutionUp,
+            0x4000_000a => ResolutionDown,
+            0x4000_000b => ResolutionAlternate,
+            0x4000_000c => ResolutionDefault,
+            0x4000_000d => ProfileCycleUp,
+            0x4000_000e => ProfileCycleDown,
+            0x4000_000f => ProfileUp,
+            0x4000_0010 => ProfileDown,
+            0x4000_0011 => SecondMode,
+            0x4000_0012 => BatteryLevel,
+            _ => return None,
+        })
     }
 }
 
@@ -218,12 +282,29 @@ pub struct MacroEvent {
 }
 
 impl MacroEvent {
+    pub fn press(keycode: u32) -> Self {
+        Self {
+            pressed: true,
+            keycode,
+        }
+    }
+
+    pub fn release(keycode: u32) -> Self {
+        Self {
+            pressed: false,
+            keycode,
+        }
+    }
+
     pub fn to_wire(self) -> (u32, u32) {
-        todo!()
+        (u32::from(self.pressed), self.keycode)
     }
 
     pub fn from_wire(kind: u32, keycode: u32) -> Self {
-        todo!()
+        Self {
+            pressed: kind == 1,
+            keycode,
+        }
     }
 }
 
@@ -247,7 +328,14 @@ pub enum ButtonAction {
 
 impl ButtonAction {
     pub fn action_type(&self) -> ActionType {
-        todo!()
+        match self {
+            ButtonAction::None => ActionType::None,
+            ButtonAction::Button(_) => ActionType::Button,
+            ButtonAction::Key(_) => ActionType::Key,
+            ButtonAction::Macro(_) => ActionType::Macro,
+            ButtonAction::Special(_) => ActionType::Special,
+            ButtonAction::Unknown => ActionType::Unknown,
+        }
     }
 }
 
@@ -266,7 +354,13 @@ pub enum LedMode {
 
 impl LedMode {
     pub fn from_wire(value: u32) -> Option<Self> {
-        todo!()
+        Some(match value {
+            0 => LedMode::Off,
+            1 => LedMode::On,
+            2 => LedMode::Cycle,
+            3 => LedMode::Breathing,
+            _ => return None,
+        })
     }
 }
 
@@ -285,11 +379,20 @@ impl ColorDepth {
     /// Largest value a single channel may take at this depth. Writes with
     /// bits set above this must be rejected.
     pub fn max_channel(self) -> u32 {
-        todo!()
+        match self {
+            ColorDepth::Monochrome => 0,
+            ColorDepth::Rgb888 => 255,
+            ColorDepth::Rgb111 => 1
+        }
     }
 
     pub fn from_wire(value: u32) -> Option<Self> {
-        todo!()
+        Some(match value {
+            0 => ColorDepth::Monochrome,
+            1 => ColorDepth::Rgb888,
+            2 => ColorDepth::Rgb111, 
+            _ => return None,
+        })
     }
 }
 
@@ -308,10 +411,17 @@ impl Color {
 
     /// Reject a colour with any channel above `depth.max_channel()`.
     pub fn validate(self, depth: ColorDepth) -> Result<()> {
-        todo!()
+        let max = depth.max_channel();
+
+        for (name, value) in [("red", self.red), ("green", self.green), ("blue", self.blue),] {
+            if value > max {
+                return Err(Error::invalid("Color", format!("`{name}` channel `{value}` exceeds maximum `{max}`"),));
+            }
+        }
+        Ok(())
     }
 
     pub fn to_wire(self) -> (u32, u32, u32) {
-        todo!()
+        (self.red, self.green, self.blue)
     }
 }

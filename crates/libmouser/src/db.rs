@@ -48,7 +48,20 @@ impl DeviceMatch {
     ///
     /// `None` for anything malformed, including trailing fields.
     pub fn parse(token: &str) -> Option<Self> {
-        todo!()
+        let mut parts = token.split(':');
+        let bus = BusType::from_token(parts.next()?);
+        let vendor = u16::from_str_radix(parts.next()?, 16).ok()?;
+        let product = u16::from_str_radix(parts.next()?, 16).ok()?;
+
+        if parts.next().is_some() {
+            return None;
+        }
+
+        Some(Self {
+            bus,
+            vendor,
+            product
+        })
     }
 }
 
@@ -63,12 +76,21 @@ pub struct DpiRange {
 impl DpiRange {
     /// Parse `100:16000@100`. Reject `step == 0` and `min > max`.
     pub fn parse(s: &str) -> Option<Self> {
-        todo!()
+        let (span, step) = s.split_once('@')?;
+        let (min, max) = span.split_once(':')?;
+
+        let range = Self {
+            min: min.trim().parse().ok()?,
+            max: max.trim().parse().ok()?,
+            step: step.trim().parse().ok()?,
+        };
+
+        (range.step > 0 && range.min <= range.max).then_some(range)
     }
 
     /// Expand to every value in the range, for `Resolution.Resolutions`.
     pub fn values(&self) -> Vec<u32> {
-        todo!()
+        (self.min..=self.max).step_by(self.step as usize).collect()
     }
 }
 
@@ -91,41 +113,61 @@ pub struct DeviceEntry {
 impl DeviceEntry {
     /// The `[Driver/<driver>]` section for this entry's own driver.
     pub fn driver_section(&self) -> Option<&BTreeMap<String, String>> {
-        todo!()
+        self.driver_sections.get(&self.driver)
     }
 
     /// Look a key up in this entry's own driver section.
     pub fn get(&self, key: &str) -> Option<&str> {
-        todo!()
+        self.driver_section()?.get(key).map(String::as_str)
     }
 
     /// Look a key up in a named section — for nested sub-sections.
     pub fn get_in(&self, section: &str, key: &str) -> Option<&str> {
-        todo!()
+        self.driver_sections.get(section)?.get(key).map(String::as_str)
     }
 
     pub fn get_u32(&self, key: &str) -> Option<u32> {
-        todo!()
+        self.get(key)?.trim().parse().ok()
     }
 
     /// `1`/`true` and `0`/`false`.
     pub fn get_bool(&self, key: &str) -> Option<bool> {
-        todo!()
+        match self.get(key)?.trim() {
+            "1" | "true" => Some(true),
+            "0" | "false" => Some(false),
+            _ => None,
+        }
     }
 
     /// Split a `;`-separated list value, dropping empties.
     pub fn get_list(&self, key: &str) -> Vec<&str> {
-        todo!()
+        self.get(key)
+            .map(|value| {
+                value.split(';')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     pub fn dpi_range(&self) -> Option<DpiRange> {
-        todo!()
+        DpiRange::parse(self.get("DpiRange")?)
     }
 
     /// `DpiList=400;800;1600`, sorted ascending and deduped as the API
     /// requires.
     pub fn dpi_list(&self) -> Vec<u32> {
-        todo!()
+        let mut list: Vec<u32> = self
+            .get_list("DpiList")
+            .into_iter()
+            .filter_map(|v| v.parse().ok())
+            .collect();
+
+        list.sort_unstable();
+        list.dedup();
+
+        list
     }
 
     /// `Quirks=A;B`. Some files use the singular `Quirk=` — accept both.
