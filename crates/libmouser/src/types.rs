@@ -137,17 +137,17 @@ impl ResolutionCaps {
 
     /// Render as the `au` array `Resolution.Capabilities` exports.
     pub fn to_wire(self) -> Vec<u32> {
-        let mut v = Vec::new();
+        let mut vals = Vec::new();
         
         if self.separate_xy {
-            v.push(Self::SEPARATE_XY);
+            vals.push(Self::SEPARATE_XY);
         }
 
         if self.disable {
-            v.push(Self::DISABLE);
+            vals.push(Self::DISABLE);
         }
 
-        v
+        vals
     }
 }
 

@@ -52,11 +52,9 @@ impl DeviceMatch {
         let bus = BusType::from_token(parts.next()?);
         let vendor = u16::from_str_radix(parts.next()?, 16).ok()?;
         let product = u16::from_str_radix(parts.next()?, 16).ok()?;
-
         if parts.next().is_some() {
             return None;
         }
-
         Some(Self {
             bus,
             vendor,
@@ -78,13 +76,11 @@ impl DpiRange {
     pub fn parse(s: &str) -> Option<Self> {
         let (span, step) = s.split_once('@')?;
         let (min, max) = span.split_once(':')?;
-
         let range = Self {
             min: min.trim().parse().ok()?,
             max: max.trim().parse().ok()?,
             step: step.trim().parse().ok()?,
         };
-
         (range.step > 0 && range.min <= range.max).then_some(range)
     }
 
@@ -145,7 +141,7 @@ impl DeviceEntry {
             .map(|value| {
                 value.split(';')
                     .map(str::trim)
-                    .filter(|s| !s.is_empty())
+                    .filter(|str| !str.is_empty())
                     .collect()
             })
             .unwrap_or_default()
@@ -161,12 +157,10 @@ impl DeviceEntry {
         let mut list: Vec<u32> = self
             .get_list("DpiList")
             .into_iter()
-            .filter_map(|v| v.parse().ok())
+            .filter_map(|val| val.parse().ok())
             .collect();
-
         list.sort_unstable();
         list.dedup();
-
         list
     }
 
