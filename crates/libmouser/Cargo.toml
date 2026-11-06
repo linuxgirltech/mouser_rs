@@ -1,0 +1,19 @@
+[package]
+name = "libmouser"
+description = "Configuration library for gaming mice and other configurable input devices"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+libc.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+udev = { workspace = true, optional = true }
+
+[features]
+# Device discovery and hotplug through libudev. Without it, feed node paths
+# in by hand with `Context::add_hidraw`.
+default = ["udev"]
