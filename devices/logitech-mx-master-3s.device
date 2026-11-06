@@ -1,0 +1,10 @@
+# Logitech MX Master 3S
+# Upstream libratbag lists only a Bluetooth match for this one. Over a Bolt
+# receiver it reports a different PID, so if yours does not match when
+# dongled, that is a database gap and not a bug in your driver - check the
+# HID_ID in /sys/class/hidraw/*/device/uevent and add the ID here.
+[Device]
+Name=Logitech MX Master 3S
+DeviceMatch=bluetooth:046d:b034
+Driver=hidpp20
+DeviceType=mouse

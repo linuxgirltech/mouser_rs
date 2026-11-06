@@ -1,0 +1,17 @@
+# DEVELOPMENT ONLY - do not ship this file.
+#
+# Your /dev/hidraw* nodes are root-only (crw-------), so poking at the G502
+# from a test binary means sudo every time. This hands your login session
+# write access to one specific device instead.
+#
+# Understand what you are trading: write access to a hidraw node is the
+# ability to send arbitrary HID reports to that device, and on a device that
+# also presents a keyboard collection that can mean synthesising keystrokes.
+# Scope it to the one device you are working on, never to char-hidraw as a
+# whole, and remove it when you are done.
+#
+#   sudo install -m 644 data/udev/70-mouser-dev.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=hidraw
+#
+# Logitech G502 HERO (046d:c08b).
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c08b", TAG+="uaccess"

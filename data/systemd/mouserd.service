@@ -1,0 +1,34 @@
+[Unit]
+Description=libmouser device configuration daemon
+Documentation=https://github.com/linuxtechgirl/mouser_rs
+
+[Service]
+Type=dbus
+BusName=org.freedesktop.mouser1
+ExecStart=/usr/bin/mouserd
+
+# Raw HID write access is the whole point of this daemon, so it needs the
+# hidraw nodes. Everything else is locked down.
+DeviceAllow=char-hidraw rw
+DevicePolicy=closed
+
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+NoNewPrivileges=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

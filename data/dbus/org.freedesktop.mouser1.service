@@ -1,0 +1,5 @@
+[D-BUS Service]
+Name=org.freedesktop.mouser1
+Exec=/usr/bin/mouserd
+User=root
+SystemdService=mouserd.service

@@ -1,0 +1,7 @@
+# Logitech MX Vertical
+# c08a is the wired/USB-cable identity; 407b is the Unifying wireless PID.
+[Device]
+Name=Logitech MX Vertical
+DeviceMatch=bluetooth:046d:b020;usb:046d:407b;usb:046d:c08a
+Driver=hidpp20
+DeviceType=mouse
