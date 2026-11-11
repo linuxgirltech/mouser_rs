@@ -249,24 +249,45 @@ fn the_report_descriptor_filter_rejects_a_plain_mouse_interface() {
 #[test]
 #[ignore = "unplug and replug the mouse within 30s"]
 fn the_monitor_sees_the_mouse_come_and_go() {
+    fn saw(seen: &[(HotplugEvent, PathBuf)], kind: HotplugEvent) -> bool {
+        seen.iter().any(|(k, _)| *k == kind)
+    }
+
     let mut monitor = Monitor::new().expect("monitor should open");
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     let mut seen: Vec<(HotplugEvent, PathBuf)> = Vec::new();
 
     eprintln!("unplug the mouse, then plug it back in...");
-    while std::time::Instant::now() < deadline && seen.len() < 2 {
+    while std::time::Instant::now() < deadline {
         while let Some((kind, node)) = monitor.poll_event() {
             eprintln!("{kind:?} {}", node.devnode.display());
             seen.push((kind, node.devnode));
         }
+
+        // Stop once both kinds have arrived, never on a count: one unplug of
+        // a device presenting several nodes already yields several Removed
+        // events, so `seen.len() >= 2` is satisfied before the replug.
+        if saw(&seen, HotplugEvent::Removed) && saw(&seen, HotplugEvent::Added) {
+            break;
+        }
+
         std::thread::sleep(Duration::from_millis(50));
     }
 
     assert!(!seen.is_empty(), "no hotplug events in 30s — did you unplug it?");
     assert!(
-        seen.iter().any(|(k, _)| *k == HotplugEvent::Removed),
+        saw(&seen, HotplugEvent::Removed),
         "expected a Removed event, got {seen:?}"
     );
+    assert!(
+        saw(&seen, HotplugEvent::Added),
+        "expected an Added event, got {seen:?}"
+    );
+
+    // The node numbering is not stable across a replug: the kernel assigns
+    // hidraw indices in probe order, so the device can come back on different
+    // ones. Deliberately not asserted.
+    eprintln!("{} events total", seen.len());
     assert!(
         seen.iter().any(|(k, _)| *k == HotplugEvent::Added),
         "expected an Added event, got {seen:?}"
