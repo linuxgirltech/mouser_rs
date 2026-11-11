@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use crate::error::Result;
+use crate::{HidrawDevice, error::Result};
 
 /// A candidate node, before any driver has looked at it.
 #[derive(Debug, Clone)]
@@ -19,7 +19,33 @@ pub struct HidrawNode {
 /// Match subsystem `hidraw` and skip entries with no devnode. Sorting by
 /// devnode keeps object paths stable across restarts.
 pub fn enumerate() -> Result<Vec<HidrawNode>> {
-    todo!()
+    let mut enumerator = udev::Enumerator::new()?;
+    enumerator.match_subsystem("hidraw")?;
+    enumerator.match_is_initialized()?;
+
+    let mut nodes: Vec<HidrawNode> = enumerator
+        .scan_devices()?
+        .filter_map(|device| {
+            Some(HidrawNode {
+                devnode: device.devnode()?.to_path_buf(),
+                syspath: device.syspath().to_path_buf()
+            })
+        })
+        .collect();
+
+    nodes.sort_by(|a, b| a.devnode.cmp(&b.devnode));
+    Ok(nodes)
+}
+
+#[test]
+#[ignore = "requires real hardware"]
+fn list_the_actual_nodes() {
+    for node in crate::enumerate::enumerate().unwrap() {
+        let info = crate::HidrawDevice::open(&node.devnode)
+            .map(|dev| format!("{:?}", dev.info()))
+            .unwrap_or_else(|err| format!("<{err}>"));
+        println!("{} - {info}", node.devnode.display())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

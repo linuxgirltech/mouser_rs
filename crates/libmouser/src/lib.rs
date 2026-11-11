@@ -54,13 +54,15 @@ use std::path::{Path, PathBuf};
 pub struct ManagedDevice {
     device: Device,
     backend: Box<dyn DeviceBackend>,
+    hidraw: HidrawDevice,
 }
 
 impl ManagedDevice {
-    pub fn from_probe(result: ProbeResult) -> Self {
+    pub fn from_probe(result: ProbeResult, hidraw: HidrawDevice) -> Self {
         Self {
             device: result.device,
             backend: result.backend,
+            hidraw,
         }
     }
 
@@ -78,17 +80,17 @@ impl ManagedDevice {
     ///
     /// On failure leave the flags set, so the caller can retry or resync.
     pub fn commit(&mut self) -> Result<()> {
-        todo!()
+        self.backend.commit(&mut self.device, &mut self.hidraw)
     }
 
     /// Re-read the hardware, discarding staged changes.
     pub fn reload(&mut self) -> Result<()> {
-        todo!()
+        self.backend.commit(&mut self.device, &mut self.hidraw)
     }
 
     /// Switch profiles, letting the backend do it immediately if it can.
     pub fn set_active_profile(&mut self, index: u32) -> Result<()> {
-        self.backend.set_active_profile(&mut self.device, index)
+        self.backend.set_active_profile(&mut self.device, &mut self.hidraw, index)
     }
 }
 
@@ -152,7 +154,24 @@ impl Context {
     /// [`Error::UnknownDevice`] means this is not a device we configure — the
     /// normal outcome for most hidraw nodes on a system.
     pub fn add_hidraw(&mut self, path: impl AsRef<Path>) -> Result<usize> {
-        todo!()
+        let path = path.as_ref();
+        let mut hidraw = HidrawDevice::open(path)?;
+
+        // Copy the IDs out: `info()` borrows `hidraw`, and `probe` needs it
+        // mutably a few lines down.
+        let info = hidraw.info();
+        let (bus, vendor, product) = (info.bus, info.vendor, info.product);
+
+        let entry = self.db.find(bus, vendor, product).ok_or_else(|| {
+            Error::UnknownDevice(ModelId::new(bus, vendor, product).to_string())
+        })?;
+
+        let mut result = self.registry.probe(entry, &mut hidraw)?;
+        result.device.devnode = Some(path.to_path_buf());
+
+        let index = self.devices.len();
+        self.devices.push(ManagedDevice::from_probe(result, hidraw));
+        Ok(index)
     }
 
     /// Drop the device probed from `devnode`. Returns whether one went.
@@ -167,7 +186,29 @@ impl Context {
     /// info, anything else at warn.
     #[cfg(feature = "udev")]
     pub fn probe_all(&mut self) -> Result<usize> {
-        todo!()
+        let nodes = crate::enumerate::enumerate()?;
+        let mut added = 0usize;
+
+        for node in nodes {
+            if self.devices.iter().any(|d| d.device.devnode.as_deref() == Some(&*node.devnode)) {
+                continue;
+            }
+
+            match self.add_hidraw(&node.devnode) {
+                Ok(_) => added += 1,
+                Err(err @ Error::UnknownDevice(_)) => {
+                    tracing::trace!(node = %node.devnode.display(), %err);
+                }
+                Err(err @ (Error::UnknownDriver(_) | Error::ProbeFailed { .. })) => {
+                    tracing::debug!(node = %node.devnode.display(), %err, "Node not claimed");
+                }
+                Err(err) => {
+                    tracing::warn!(node = %node.devnode.display(), %err, "Probe failed");
+                }
+            }
+        }
+
+        Ok(added)
     }
 }
 

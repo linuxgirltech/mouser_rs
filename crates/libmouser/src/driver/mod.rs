@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use crate::db::DeviceEntry;
 use crate::device::Device;
-use crate::error::Result;
+use crate::error::{Result, Error};
 use crate::hid::HidrawDevice;
 
 pub mod hidpp20;
@@ -56,20 +56,21 @@ pub trait DeviceBackend: Send + Sync {
     ///
     /// On success the caller clears the dirty flags. On failure the daemon
     /// emits `Resync` and re-reads through [`DeviceBackend::reload`].
-    fn commit(&mut self, device: &mut Device) -> Result<()>;
+    fn commit(&mut self, device: &mut Device, hidraw: &mut HidrawDevice) -> Result<()>;
 
     /// Re-read the hardware into `device`, discarding staged changes.
     ///
     /// The default is a no-op, which is right for devices whose state
     /// libmouser fully owns.
-    fn reload(&mut self, device: &mut Device) -> Result<()> {
-        let _ = device;
+    fn reload(&mut self, device: &mut Device, hidraw: &mut HidrawDevice) -> Result<()> {
+        let _ = (device, hidraw);
         Ok(())
     }
 
     /// Switch profile now rather than at commit, for devices that support it.
     /// The default just stages it like any other change.
-    fn set_active_profile(&mut self, device: &mut Device, index: u32) -> Result<()> {
+    fn set_active_profile(&mut self, device: &mut Device, hidraw: &mut HidrawDevice, index: u32) -> Result<()> {
+        let _ = hidraw;
         device.set_active_profile(index)
     }
 }
@@ -108,7 +109,11 @@ impl DriverRegistry {
 
     /// Probe `hidraw` with whichever driver `entry` names.
     pub fn probe(&self, entry: &DeviceEntry, hidraw: &mut HidrawDevice) -> Result<ProbeResult> {
-        todo!("look the driver up, Error::UnknownDriver if absent, then call probe")
+        let driver = self
+            .get(&entry.driver)
+            .ok_or_else(|| Error::UnknownDriver(entry.driver.clone()))?;
+
+        driver.probe(ProbeContext {entry, hidraw})
     }
 }
 
