@@ -27,8 +27,10 @@
 //! `Quirks` / `Quirk`.
 
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::Error;
 use crate::error::Result;
 use crate::types::{BusType, DeviceType};
 
@@ -166,7 +168,9 @@ impl DeviceEntry {
 
     /// `Quirks=A;B`. Some files use the singular `Quirk=` — accept both.
     pub fn quirks(&self) -> Vec<&str> {
-        todo!()
+        let mut quirks = self.get_list("Quirks");
+        quirks.extend(self.get_list("Quirk"));
+        quirks
     }
 }
 
@@ -186,12 +190,32 @@ impl DeviceDb {
     /// A file that fails to parse should be logged and skipped, not fatal —
     /// one bad file in a packaged database must not take the daemon down.
     pub fn load_dir(dir: impl AsRef<Path>) -> Result<Self> {
-        todo!()
+        let dir = dir.as_ref();
+        let mut db = Self::new();
+
+        let read = fs::read_dir(dir).map_err(|err| Error::io(dir, err))?;
+        for dirent in read {
+            let dirent = dirent.map_err(|err| Error::io(dir, err))?;
+            let path = dirent.path();
+            if path.extension().is_none_or(|event| event != "device") {
+                continue;
+            }
+            match DeviceDb::parse_file(&path) {
+                Ok(entry) => db.entries.push(entry),
+                Err(err) => tracing::warn!(%err, path = %path.display(), "Skipping, Device file"),
+            }
+        }
+
+        db.entries.sort_by(|a, b| a.name.cmp(&b.name));
+        tracing::info!(count = db.entries.len(), dir = %dir.display(), "Loading Device Db");
+        Ok(db)
     }
 
     /// Parse one `.device` file.
     pub fn parse_file(path: impl AsRef<Path>) -> Result<DeviceEntry> {
-        todo!("read to string, hand to parse_entry")
+        let path = path.as_ref();
+        let text = fs::read_to_string(path).map_err(|err| Error::io(path, err))?;
+        parse_entry(path, &text)
     }
 
     pub fn entries(&self) -> &[DeviceEntry] {
@@ -211,7 +235,18 @@ impl DeviceDb {
     /// Bluetooth devices sometimes report their USB IDs, so try an exact
     /// bus/vid/pid match first and a bus-agnostic vid/pid match second.
     pub fn find(&self, bus: BusType, vendor: u16, product: u16) -> Option<&DeviceEntry> {
-        todo!()
+        let exact = self.entries.iter().find(|event| {
+            event.matches
+                .iter()
+                .any(|message| message.bus == bus && message.vendor == vendor && message.product == product)
+        });
+        exact.or_else(|| {
+            self.entries.iter().find(|entry| {
+                entry.matches
+                    .iter()
+                    .any(|message| message.vendor == vendor && message.product == product )
+            })
+        })
     }
 }
 
@@ -221,5 +256,75 @@ impl DeviceDb {
 /// skipped. Anything that is not a `[Section]` or `Key=Value` is an error, as
 /// is a key before the first section header or an unknown section name.
 fn parse_entry(path: &Path, text: &str) -> Result<DeviceEntry> {
-    todo!()
+    let mut section = String::new();
+    let mut device: BTreeMap<String, String> = BTreeMap::new();
+    let mut driver_sections: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+
+    for (line_num, raw_line) in text.lines().enumerate() {
+        let line = raw_line.trim();
+        let line_num = line_num + 1;
+
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+
+        if let Some(inner) = line.strip_prefix('[') {
+            let name = inner.strip_suffix(']').ok_or_else(|| {
+                Error::parse(path, line_num, "Section header is missing its closing `]`")
+            })?;
+            section = name.trim().to_string();
+            if section != "Device" && !section.starts_with("Driver/") {
+                return Err(Error::parse(path, line_num, format!("Unknown section `{section}`")));
+            }
+            continue;
+        }
+
+        let (key, value) = line.split_once('=').ok_or_else(|| {
+            Error::parse(path, line_num, "Expected `Key=Value` or a Section Header")
+        })?;
+
+        let key = key.trim().to_string();
+        let value = value.trim().to_string();
+
+        match section.as_str() {
+            "" => {
+                return Err(Error::parse(path, line_num, "Key before any section header"));
+            }
+            "Device" => {
+                device.insert(key, value);
+            }
+            other => {
+                let name = other.trim_start_matches("Driver/").to_string();
+                driver_sections.entry(name).or_default().insert(key, value);
+            }
+        }
+    }
+
+    let required = |key: &str| -> Result<String> {
+        device.get(key).cloned().ok_or_else(|| Error::parse(path, 0, "`[Device]` is missing `{key}=`"))
+    };
+
+    let name = required("Name")?;
+    let driver = required("Driver")?;
+    let device_type: DeviceType = required("DeviceType")?.parse().map_err(|err: Error| Error::parse(path, 0, err.to_string()))?;
+    let match_value = required("DeviceMatch")?;
+    let mut matches = Vec::new();
+    for token in match_value.split(';').map(str::trim).filter(|str| !str.is_empty()) {
+        let parsed = DeviceMatch::parse(token).ok_or_else(|| {
+            Error::parse(path, 0, format!("Malformed DeviceMatch token `{token}`"))
+        })?;
+        matches.push(parsed);
+    }
+    if matches.is_empty() {
+        return Err(Error::parse(path, 0, "DeviceMatch= lists no devices"));
+    }
+
+    Ok(DeviceEntry { 
+        path: path.to_path_buf(), 
+        name, 
+        device_type, 
+        driver, 
+        matches, 
+        driver_sections 
+    })
 }
