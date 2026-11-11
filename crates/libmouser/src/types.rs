@@ -425,3 +425,8 @@ impl Color {
         (self.red, self.green, self.blue)
     }
 }
+
+/// Unit tests live outside `src/`, but compile as a child module of `types`.
+#[cfg(test)]
+#[path = "../tests/unit/types.rs"]
+mod tests;

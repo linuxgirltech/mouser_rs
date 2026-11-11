@@ -294,14 +294,17 @@ fn parse_entry(path: &Path, text: &str) -> Result<DeviceEntry> {
                 device.insert(key, value);
             }
             other => {
-                let name = other.trim_start_matches("Driver/").to_string();
-                driver_sections.entry(name).or_default().insert(key, value);
+                let name = other.strip_prefix("Driver/").unwrap_or(other);
+                driver_sections
+                    .entry(name.to_string())
+                    .or_default()
+                    .insert(key, value);
             }
         }
     }
 
     let required = |key: &str| -> Result<String> {
-        device.get(key).cloned().ok_or_else(|| Error::parse(path, 0, "`[Device]` is missing `{key}=`"))
+        device.get(key).cloned().ok_or_else(|| Error::parse(path, 0,"`[Device]` is missing `{key}=`"))
     };
 
     let name = required("Name")?;
@@ -319,12 +322,18 @@ fn parse_entry(path: &Path, text: &str) -> Result<DeviceEntry> {
         return Err(Error::parse(path, 0, "DeviceMatch= lists no devices"));
     }
 
-    Ok(DeviceEntry { 
-        path: path.to_path_buf(), 
-        name, 
-        device_type, 
-        driver, 
-        matches, 
-        driver_sections 
+    Ok(DeviceEntry {
+        path: path.to_path_buf(),
+        name,
+        device_type,
+        driver,
+        matches,
+        driver_sections
     })
 }
+
+/// Unit tests live outside `src/`, but compile as a child module of `db` so
+/// they can reach the private `parse_entry`.
+#[cfg(test)]
+#[path = "../tests/unit/db.rs"]
+mod tests;
