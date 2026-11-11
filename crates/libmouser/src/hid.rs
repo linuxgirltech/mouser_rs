@@ -30,12 +30,13 @@ use std::fs::{self, File};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::path::{Path, PathBuf};
 
-
 use crate::Error;
 use crate::error::Result;
 use crate::types::BusType;
 
+/// Direction bit for "userspace writes", i.e. the kernel reads your buffer.
 const IOC_WRITE: u32 = 1;
+/// Direction bit for "userspace reads", i.e. the kernel writes your buffer.
 const IOC_READ: u32 = 2;
 
 const IOC_NRSHIFT: u32 = 0;
@@ -43,6 +44,8 @@ const IOC_TYPESHIFT: u32 = IOC_NRSHIFT + 8; // _IOC_NRBITS   = 8
 const IOC_SIZESHIFT: u32 = IOC_TYPESHIFT + 8; // _IOC_TYPEBITS = 8
 const IOC_DIRSHIFT: u32 = IOC_SIZESHIFT + 14; // _IOC_SIZEBITS = 14 on x86
 
+/// Largest payload the 14-bit size field can encode. A longer buffer would
+/// overflow into the direction bits and silently name a different ioctl.
 const IOC_SIZE_MAX: u32 = (1 << 14) - 1;
 
 /// The hidraw ioctl type byte.
@@ -161,7 +164,7 @@ impl HidrawDevice {
         &self.path
     }
 
-    // `HIDIOCSFEATURE` / `HIDIOCGFEATURE` — same shape, different `nr`.
+    /// `HIDIOCSFEATURE` / `HIDIOCGFEATURE` — same shape, different `nr`.
     ///
     /// Both are `_IOWR`, so the buffer must be writable whichever way the
     /// data is actually flowing. Returns the byte count the kernel moved.
@@ -210,3 +213,9 @@ impl HidrawDevice {
         self.file.read(buf).map_err(|err| Error::io(&self.path, err))
     }
 }
+
+/// Unit tests live outside `src/`, but compile as a child module of `hid` so
+/// they can reach private items without widening the public API.
+#[cfg(test)]
+#[path = "../tests/unit/hid.rs"]
+mod tests;
