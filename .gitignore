@@ -4,4 +4,4 @@
 .idea/
 .vscode/
 *.swp
-docs/
+.claude/
