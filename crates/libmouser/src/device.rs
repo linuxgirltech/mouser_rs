@@ -84,13 +84,13 @@ impl Device {
 
     /// True when any profile has unwritten changes.
     pub fn is_dirty(&self) -> bool {
-        self.profiles.iter().any(|profile| profile.is_dirty)
+        self.profiles.iter().any(Profile::has_changes)
     }
 
     /// Clear every dirty flag. Called after a successful commit.
     pub fn clear_dirty(&mut self) {
         for profile in &mut self.profiles {
-            profile.is_dirty = false;
+            profile.clear_dirty();
         }
     }
 }
@@ -255,6 +255,26 @@ impl Profile {
         self.is_dirty = true;
         Ok(())
     }
+
+    pub fn has_changes(&self)  -> bool {
+        self.is_dirty 
+            || self.resolutions.iter().any(|res| res.is_dirty)
+            || self.buttons.iter().any(|but| but.is_dirty)
+            || self.leds.iter().any(|led| led.is_dirty)
+    }
+
+    pub fn clear_dirty(&mut self) {
+        self.is_dirty = false;
+        for res in &mut self.resolutions {
+            res.is_dirty = false;
+        }
+        for but in &mut self.buttons {
+            but.is_dirty = false;
+        }
+        for led in &mut self.leds {
+            led.is_dirty = false;
+        }
+    }
 }
 
 /// One dpi setting within a profile.
@@ -266,6 +286,7 @@ pub struct Resolution {
     pub is_default: bool,
     /// Always false when the device lacks `ResolutionCaps::disable`.
     pub is_disabled: bool,
+    pub is_dirty: bool,
     pub dpi: Dpi,
     /// Permitted dpi values, ascending. Empty when the device will not say.
     pub dpis: Vec<u32>,
@@ -279,6 +300,7 @@ impl Resolution {
             is_active: false,
             is_default: false,
             is_disabled: false,
+            is_dirty: false,
             dpi,
             dpis,
         }
@@ -304,6 +326,7 @@ impl Resolution {
             }
         }
         self.dpi = dpi;
+        self.is_dirty = true;
         Ok(())
     }
 }
@@ -317,6 +340,7 @@ pub struct Button {
     pub action_types: Vec<u32>,
     /// Longest macro the device will store; 0 when macros are unsupported.
     pub macro_length: u32,
+    pub is_dirty: bool,
 }
 
 impl Button {
@@ -326,6 +350,7 @@ impl Button {
             action: ButtonAction::None,
             action_types,
             macro_length: 0,
+            is_dirty: false,
         }
     }
 
@@ -340,6 +365,7 @@ impl Button {
             return Err(Error::invalid("Mapping", format!("macro of {} events exceeds the device limit of {}", events.len(), self.macro_length)))
         }
         self.action = action;
+        self.is_dirty = true;
         Ok(())
     }
 }
@@ -358,6 +384,7 @@ pub struct Led {
     /// Brightness normalised to 0..=255. Devices with less range map it in an
     /// implementation-defined way.
     pub brightness: u32,
+    pub is_dirty: bool,
 }
 
 impl Led {
@@ -373,6 +400,7 @@ impl Led {
             color_depth,
             effect_duration: 0,
             brightness: 0,
+            is_dirty: false,
         }
     }
 
@@ -381,14 +409,16 @@ impl Led {
         if !self.modes.contains(&(mode as u32)) {
             return Err(Error::invalid("Mode", format!("LED {} does not support mode {}", self.index, mode as u32)));
         }
-        self.mode = mode;   
+        self.mode = mode;
+        self.is_dirty = true;   
         Ok(())
     }
 
     /// Reject colours failing `Color::validate` for `color_depth`.
     pub fn set_color(&mut self, color: Color) -> Result<()> {
         color.validate(self.color_depth)?;
-        self.color = color;      
+        self.color = color;
+        self.is_dirty = true;      
         Ok(())
     }
 
@@ -398,15 +428,17 @@ impl Led {
             return Err(Error::invalid("effect_duration", format!("`{ms}`ms exceeds the maximum of {}", Self::MAX_EFFECT_DURATION)));
         }
         self.effect_duration = ms;
+        self.is_dirty = true;
         Ok(())
     }
 
     /// Reject anything above `MAX_BRIGHTNESS`.
     pub fn set_brightness(&mut self, value: u32) -> Result<()> {
-        if value > 255 {
-            return Err(Error::invalid("Brightness", format!("`{value}` is outside the range 0-255")));
+        if value > Self::MAX_BRIGHTNESS {
+            return Err(Error::invalid("Brightness", format!("`{value}` is outside the range 0-{}", Self::MAX_BRIGHTNESS)));
         }
         self.brightness = value;
+        self.is_dirty = true;
         Ok(())
     }
 }

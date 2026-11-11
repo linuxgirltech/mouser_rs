@@ -11,7 +11,7 @@ repository.workspace = true
 libc.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-udev = { workspace = true, optional = true }
+udev = { features = ["send"],  workspace = true, optional = true }
 
 [features]
 # Device discovery and hotplug through libudev. Without it, feed node paths
