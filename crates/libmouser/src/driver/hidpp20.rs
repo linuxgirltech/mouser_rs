@@ -182,6 +182,19 @@ impl<'a> Hidpp20<'a> {
     pub fn feature_index(&mut self, feature: u16) -> Result<Option<u8>> {
         todo!()
     }
+
+    fn is_reply_to(reply: &Message, request: &Message) -> bool {
+        if reply.device_index != request.device_index {
+            return false;
+        }
+        if reply.is_error() {
+            // Error layout: function holds the failed feature index, params[0]
+            // the failed function|swid. Verified against a G502 HERO.
+            reply.function == request.feature_index && reply.params.first() == Some(&request.function)
+        } else {
+            reply.feature_index == request.feature_index && reply.function == request.function
+        }
+    }
 }
 
 /// Not registered in `DriverRegistry::with_builtin` until `probe` works.
@@ -199,3 +212,10 @@ impl Driver for Hidpp20Driver {
         todo!()
     }
 }
+
+/// Unit tests live in `tests/unit/`, compiled in as a child module so they
+/// can reach the private `Hidpp20::is_reply_to`. Two levels up, not one:
+/// this file is in `src/driver/`.
+#[cfg(test)]
+#[path = "../../tests/unit/hidpp20.rs"]
+mod tests;

@@ -13,6 +13,11 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
+use libmouser::driver::hidpp20::{
+    DEVICE_INDEX_WIRED, FEATURE_ADJUSTABLE_DPI, FEATURE_COLOR_LED_EFFECTS,
+    FEATURE_DEVICE_FW_VERSION, FEATURE_FEATURE_SET, FEATURE_ONBOARD_PROFILES, FEATURE_REPORT_RATE,
+    FEATURE_ROOT, Hidpp20, Message,
+};
 use libmouser::enumerate::{HotplugEvent, Monitor, enumerate};
 use libmouser::{BusType, HidrawDevice};
 
@@ -292,4 +297,202 @@ fn the_monitor_sees_the_mouse_come_and_go() {
         seen.iter().any(|(k, _)| *k == HotplugEvent::Added),
         "expected an Added event, got {seen:?}"
     );
+}
+// =========================================================== Hidpp20 ======
+//
+// Everything below talks to the device. The vectors these assert against were
+// captured from a wired G502 HERO; see the comments for the raw bytes.
+
+/// Open the G502's HID++ node, ready for a conversation.
+///
+/// Finds the node by report descriptor rather than by name: the kernel
+/// assigns hidraw indices in probe order, so this mouse has been `hidraw1`
+/// and `hidraw4` across reboots of the same machine.
+fn g502_hidpp_device() -> HidrawDevice {
+    let path = hidpp_node(G502.0, G502.1).expect("no HID++ node found for the G502");
+    HidrawDevice::open(&path).expect("data/udev/70-mouser-dev.rules should grant access")
+}
+
+#[test]
+#[ignore = "requires the G502"]
+fn request_round_trips_the_protocol_version() {
+    let mut dev = g502_hidpp_device();
+    let mut hidpp = Hidpp20::new(&mut dev, DEVICE_INDEX_WIRED);
+
+    // Root feature, getProtocolVersion, with a ping byte to prove the reply
+    // is ours and not a notification that happened to arrive.
+    const PING: u8 = 0x5a;
+    let request = Message::short(DEVICE_INDEX_WIRED, 0x00, 1, &[0x00, 0x00, PING]).unwrap();
+
+    let reply = hidpp.request(&request).expect("the G502 answers a protocol ping");
+
+    assert!(!reply.is_error(), "got an error reply: {reply:02x?}");
+    assert_eq!(reply.device_index, DEVICE_INDEX_WIRED);
+    assert_eq!(reply.feature_index, 0x00, "from the root feature");
+    assert_eq!(reply.function, request.function, "function and swid echoed");
+    assert_eq!(reply.params[2], PING, "our ping byte, echoed");
+
+    let (major, minor) = (reply.params[0], reply.params[1]);
+    println!("HID++ {major}.{minor}");
+    assert!(major >= 2, "expected HID++ 2.0 or later, got {major}.{minor}");
+}
+
+#[test]
+#[ignore = "requires the G502"]
+fn request_accepts_a_long_reply_to_a_short_request() {
+    // Observed on every exchange with this device: a 7-byte request is
+    // answered with a 20-byte report. `request` must take the length from the
+    // reply's own report id, never from the one it sent.
+    let mut dev = g502_hidpp_device();
+    let mut hidpp = Hidpp20::new(&mut dev, DEVICE_INDEX_WIRED);
+
+    let request = Message::short(DEVICE_INDEX_WIRED, 0x00, 1, &[0, 0, 0x5a]).unwrap();
+    assert_eq!(request.params.len(), 3);
+
+    let reply = hidpp.request(&request).unwrap();
+
+    println!("sent {:#04x}, got {:#04x}", request.report_id, reply.report_id);
+    assert_eq!(
+        reply.params.len(),
+        Message::param_len(reply.report_id).unwrap(),
+        "the reply's params must match its own report id"
+    );
+}
+
+#[test]
+#[ignore = "requires the G502"]
+fn request_surfaces_a_device_error_rather_than_timing_out() {
+    // Function 0x0f does not exist on the root feature. The device answers
+    //     11 ff ff 00 fa 07 ...
+    // where byte 2 is the 2.0 error marker, byte 3 the failed feature index,
+    // byte 4 the failed function|swid, and byte 5 error code 7
+    // (invalid function id).
+    //
+    // The point of this test is that an error reply does NOT look like a
+    // normal reply — the software id sits in params[0], not in `function`. A
+    // matcher that only handles normal replies discards this as a
+    // notification and then reports a timeout for a device that answered at
+    // once. A 5s guard distinguishes the two failures.
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut dev = g502_hidpp_device();
+        let mut hidpp = Hidpp20::new(&mut dev, DEVICE_INDEX_WIRED);
+        let request = Message::short(DEVICE_INDEX_WIRED, 0x00, 0x0f, &[]).unwrap();
+        let _ = tx.send(hidpp.request(&request).map_err(|err| err.to_string()));
+    });
+
+    match rx.recv_timeout(Duration::from_secs(5)) {
+        // `request` is expected to map an error reply to `Err`. If you chose
+        // instead to return `Ok` with `is_error()` set, flip these two arms.
+        Err(_) => panic!("blocked for 5s on an error the device sent immediately"),
+        Ok(Ok(reply)) => panic!("expected an error, got {reply:02x?}"),
+        Ok(Err(message)) => println!("rejected as: {message}"),
+    }
+}
+
+#[test]
+#[ignore = "requires the G502"]
+fn feature_index_resolves_the_features_this_mouse_implements() {
+    let mut dev = g502_hidpp_device();
+    let mut hidpp = Hidpp20::new(&mut dev, DEVICE_INDEX_WIRED);
+
+    // Indices are per-device and can move with a firmware update, so only
+    // non-zero is asserted. For reference, this G502 answered:
+    //   FeatureSet 1, FwVersion 3, AdjustableDpi 10, ReportRate 11,
+    //   ColorLedEffects 2, OnboardProfiles 12.
+    for (feature, name) in [
+        (FEATURE_FEATURE_SET, "FeatureSet"),
+        (FEATURE_DEVICE_FW_VERSION, "DeviceFwVersion"),
+        (FEATURE_ADJUSTABLE_DPI, "AdjustableDpi"),
+        (FEATURE_REPORT_RATE, "ReportRate"),
+        (FEATURE_COLOR_LED_EFFECTS, "ColorLedEffects"),
+        (FEATURE_ONBOARD_PROFILES, "OnboardProfiles"),
+    ] {
+        let index = hidpp
+            .feature_index(feature)
+            .unwrap_or_else(|err| panic!("{name} ({feature:#06x}) lookup failed: {err}"))
+            .unwrap_or_else(|| panic!("{name} ({feature:#06x}) should be implemented"));
+
+        println!("{name:18} {feature:#06x} -> index {index}");
+        assert_ne!(index, 0, "{name}: index 0 means not implemented");
+    }
+}
+
+#[test]
+#[ignore = "requires the G502"]
+fn feature_index_is_none_for_a_feature_the_device_lacks() {
+    let mut dev = g502_hidpp_device();
+    let mut hidpp = Hidpp20::new(&mut dev, DEVICE_INDEX_WIRED);
+
+    // Both answer `11 ff 00 0a 00 00 00` — index 0, meaning not implemented.
+    // 0x1b04 is real (SpecialKeysMSEButtons) and this mouse does not have it;
+    // 0xdead is not a feature at all. Neither is an error: the device
+    // answered correctly, it just does not implement them.
+    for feature in [0x1b04u16, 0x0020, 0xdead] {
+        assert_eq!(
+            hidpp.feature_index(feature).unwrap(),
+            None,
+            "{feature:#06x} should resolve to None, not an error"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires the G502"]
+fn the_root_feature_resolves_to_index_zero() {
+    // A wart worth pinning. `getFeature(0x0000)` answers index 0 version 1,
+    // while an unimplemented feature answers index 0 version 0 — so by index
+    // alone the root feature is indistinguishable from absent.
+    //
+    // The root feature is *defined* to live at index 0; it is the fixed point
+    // the rest of the protocol bootstraps from. So `feature_index` should
+    // short-circuit it rather than ask the device. This asserts that
+    // short-circuit; if you document the precondition instead of coding it,
+    // expect `Ok(None)` here and say so.
+    let mut dev = g502_hidpp_device();
+    let mut hidpp = Hidpp20::new(&mut dev, DEVICE_INDEX_WIRED);
+
+    assert_eq!(hidpp.feature_index(FEATURE_ROOT).unwrap(), Some(0));
+}
+
+#[test]
+#[ignore = "requires the G502"]
+fn request_fails_rather_than_hanging_on_a_node_that_never_answers() {
+    // The G502's other node is the boot-mouse interface. Its report
+    // descriptor declares no report ids at all, so it cannot carry a 0x10
+    // report — but `write(2)` to it succeeds anyway and no reply ever comes.
+    //
+    // This is the test that forces the timeout. Without one, `request` sits
+    // in a blocking `read(2)` forever and this would hang the suite rather
+    // than fail it; the thread and the 5s guard turn that into a message.
+    //
+    // It is also how the hidpp20 driver rejects the wrong node at probe time,
+    // since bus/vid/pid are identical on both and the database cannot tell
+    // them apart.
+    let hidpp = hidpp_node(G502.0, G502.1).expect("no HID++ node found");
+    let plain = nodes_for(G502.0, G502.1)
+        .into_iter()
+        .find(|path| *path != hidpp)
+        .expect("the G502 should present a second, non-HID++ node");
+
+    println!("probing {} (expected to be silent)", plain.display());
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = HidrawDevice::open(&plain).and_then(|mut dev| {
+            let mut hidpp = Hidpp20::new(&mut dev, DEVICE_INDEX_WIRED);
+            let request = Message::short(DEVICE_INDEX_WIRED, 0x00, 1, &[0, 0, 0x5a])?;
+            hidpp.request(&request)
+        });
+        let _ = tx.send(result.map_err(|err| err.to_string()));
+    });
+
+    match rx.recv_timeout(Duration::from_secs(5)) {
+        Ok(Err(message)) => println!("gave up as: {message}"),
+        Ok(Ok(reply)) => panic!("the boot-mouse interface should not speak HID++: {reply:02x?}"),
+        Err(_) => panic!(
+            "`request` blocked for 5s — it needs a deadline, and \
+             `HidrawDevice` needs a poll-based read to give it one"
+        ),
+    }
 }
