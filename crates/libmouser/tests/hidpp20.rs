@@ -67,18 +67,15 @@ fn the_report_lengths_are_what_the_device_declares() {
     assert_eq!(Message::HEADER_LEN, HEADER_LEN);
 }
 
-#[test]
-fn the_software_id_is_non_zero() {
-    // Zero marks unsolicited device notifications. A zero software id would
-    // make our own requests indistinguishable from them, and every reply
-    // would be discarded as a notification.
-    assert_ne!(Message::SOFTWARE_ID, 0);
-    assert!(
-        Message::SOFTWARE_ID <= 0x0f,
-        "the software id has to fit the low nibble, got {:#04x}",
-        Message::SOFTWARE_ID
-    );
-}
+// The software id is checked at compile time rather than in a test, because
+// both properties are const-evaluable and a bad value should not build at all.
+//
+// Zero marks unsolicited device notifications, so a zero software id would
+// make our own requests indistinguishable from them and every reply would be
+// discarded as a notification. Anything above 0x0f would collide with the
+// function in the high nibble.
+const _: () = assert!(Message::SOFTWARE_ID != 0);
+const _: () = assert!(Message::SOFTWARE_ID <= 0x0f);
 
 // ------------------------------------------------------------ param_len ---
 
