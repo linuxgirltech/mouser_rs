@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
+use libmouser::driver::c18::{C18, Command, NUM_RESOLUTIONS, OP_SET_DPI_STAGE};
 use libmouser::driver::hidpp20::{
     DEVICE_INDEX_WIRED, FEATURE_ADJUSTABLE_DPI, FEATURE_COLOR_LED_EFFECTS,
     FEATURE_DEVICE_FW_VERSION, FEATURE_FEATURE_SET, FEATURE_ONBOARD_PROFILES, FEATURE_REPORT_RATE,
@@ -194,7 +195,15 @@ fn the_mouse_answers_a_hidpp_protocol_ping() {
     let reply = match rx.recv_timeout(Duration::from_secs(2)) {
         Ok(Ok(reply)) => reply,
         Ok(Err(err)) => panic!("hidraw error: {err}"),
-        Err(_) => panic!("no reply within 2s — wrong node, or the device is asleep"),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            panic!("no reply within 2s — wrong node, or the device is asleep")
+        }
+        // The sender is dropped when the worker panics, which arrives as
+        // `Disconnected` immediately. Reporting it as a timeout would send
+        // you looking for a hardware fault instead of reading the panic.
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("the worker thread panicked; its message is above")
+        }
     };
 
     println!("reply: {reply:02x?}");
@@ -384,9 +393,14 @@ fn request_surfaces_a_device_error_rather_than_timing_out() {
     match rx.recv_timeout(Duration::from_secs(5)) {
         // `request` is expected to map an error reply to `Err`. If you chose
         // instead to return `Ok` with `is_error()` set, flip these two arms.
-        Err(_) => panic!("blocked for 5s on an error the device sent immediately"),
         Ok(Ok(reply)) => panic!("expected an error, got {reply:02x?}"),
         Ok(Err(message)) => println!("rejected as: {message}"),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            panic!("blocked for 5s on an error the device sent immediately")
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("the worker thread panicked; its message is above")
+        }
     }
 }
 
@@ -490,9 +504,220 @@ fn request_fails_rather_than_hanging_on_a_node_that_never_answers() {
     match rx.recv_timeout(Duration::from_secs(5)) {
         Ok(Err(message)) => println!("gave up as: {message}"),
         Ok(Ok(reply)) => panic!("the boot-mouse interface should not speak HID++: {reply:02x?}"),
-        Err(_) => panic!(
+        Err(mpsc::RecvTimeoutError::Timeout) => panic!(
             "`request` blocked for 5s — it needs a deadline, and \
              `HidrawDevice` needs a poll-based read to give it one"
         ),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("the worker thread panicked; its message is above")
+        }
+    }
+}
+
+// ====================================================== Zelotes C-18 ======
+
+/// Vendor and product of the Zelotes C-18 vertical mouse — a SOAI rebadge.
+const C18: (u16, u16) = (0x12c9, 0x2003);
+
+/// A node's USB vendor and product, read from sysfs.
+///
+/// Unlike `nodes_for`, this never opens the device node, so it works on a
+/// device the udev rule does not cover yet. `syspath/device` is the HID
+/// device; two levels above it is the USB device carrying the ids.
+fn usb_ids(syspath: &Path) -> Option<(u16, u16)> {
+    let read = |name: &str| {
+        std::fs::read_to_string(syspath.join("device/../..").join(name))
+            .ok()
+            .and_then(|text| u16::from_str_radix(text.trim(), 16).ok())
+    };
+    Some((read("idVendor")?, read("idProduct")?))
+}
+
+/// True when the descriptor declares the C-18's configuration collection.
+///
+/// `06 00 ff` Usage Page (Vendor-Defined 0xFF00), `95 40` Report Count (64),
+/// `91 02` Output, `b1 02` Feature. The boot-mouse and keyboard interfaces
+/// have none of these.
+fn speaks_c18_config(descriptor: &[u8]) -> bool {
+    let has = |needle: &[u8]| descriptor.windows(needle.len()).any(|w| w == needle);
+    has(&[0x06, 0x00, 0xff]) && has(&[0x95, 0x40]) && has(&[0x91, 0x02]) && has(&[0xb1, 0x02])
+}
+
+/// Every C-18 node with its report descriptor, found without opening a node.
+fn c18_descriptors() -> Vec<(PathBuf, Vec<u8>)> {
+    enumerate()
+        .expect("enumerate should work on a live system")
+        .into_iter()
+        .filter(|node| usb_ids(&node.syspath) == Some(C18))
+        .filter_map(|node| report_descriptor(&node.syspath).map(|d| (node.devnode, d)))
+        .collect()
+}
+
+#[test]
+#[ignore = "requires the Zelotes C-18"]
+fn the_c18_presents_three_nodes() {
+    // devices/zelotes-c18.device documents three interfaces. All three carry
+    // the same bus/vid/pid, so `DeviceMatch=` cannot separate them and
+    // probing has to.
+    let nodes = c18_descriptors();
+
+    assert!(
+        !nodes.is_empty(),
+        "no {:04x}:{:04x} nodes found — is the C-18 plugged in?",
+        C18.0,
+        C18.1
+    );
+    for (devnode, _) in &nodes {
+        println!("{}", devnode.display());
+    }
+    assert_eq!(nodes.len(), 3, "expected three nodes, found {}", nodes.len());
+}
+
+#[test]
+#[ignore = "requires the Zelotes C-18"]
+fn exactly_one_c18_node_is_the_configuration_interface() {
+    let nodes = c18_descriptors();
+    assert!(!nodes.is_empty(), "the C-18 was not found");
+
+    let config: Vec<&PathBuf> = nodes
+        .iter()
+        .filter(|(_, descriptor)| speaks_c18_config(descriptor))
+        .map(|(devnode, _)| devnode)
+        .collect();
+
+    assert_eq!(
+        config.len(),
+        1,
+        "expected one configuration interface, found {config:?}"
+    );
+    println!("config interface: {}", config[0].display());
+}
+
+#[test]
+#[ignore = "requires the Zelotes C-18"]
+fn the_c18_does_not_speak_hidpp() {
+    // The justification for a separate driver. The C-18's vendor collection
+    // carries 64-byte reports with no report id; HID++ needs report 0x10 or
+    // 0x11 declared. Were this to pass, the device would belong on hidpp20
+    // and the `c18` driver would not need writing.
+    for (devnode, descriptor) in c18_descriptors() {
+        assert!(
+            !speaks_hidpp(&descriptor),
+            "{} declares a HID++ collection",
+            devnode.display()
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires the Zelotes C-18 and the udev rule"]
+fn the_c18_configuration_interface_can_be_opened() {
+    // Separated from the descriptor tests above, which read sysfs and need no
+    // permission. This one needs data/udev/70-mouser-dev.rules installed, so
+    // its failure means "install the rule", not "the device file is wrong".
+    let (devnode, _) = c18_descriptors()
+        .into_iter()
+        .find(|(_, descriptor)| speaks_c18_config(descriptor))
+        .expect("no C-18 configuration interface found");
+
+    let dev = HidrawDevice::open(&devnode).unwrap_or_else(|err| {
+        panic!(
+            "cannot open {}: {err}\n  install the dev rule:\n    \
+             sudo install -m 644 data/udev/70-mouser-dev.rules /etc/udev/rules.d/\n    \
+             sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=hidraw",
+            devnode.display()
+        )
+    });
+
+    let info = dev.info();
+    println!("{:04x}:{:04x} {:?} at {:?}", info.vendor, info.product, info.name, info.phys);
+
+    assert_eq!((info.vendor, info.product), C18);
+    assert_eq!(info.bus, BusType::Usb);
+}
+
+/// Open the C-18's configuration interface, ready for a transaction.
+///
+/// Found by report descriptor, never by node name: this mouse has been
+/// `hidraw14` and `hidraw12` on the same machine.
+fn c18_config_device() -> HidrawDevice {
+    let (devnode, _) = c18_descriptors()
+        .into_iter()
+        .find(|(_, descriptor)| speaks_c18_config(descriptor))
+        .expect("no C-18 configuration interface found — is it plugged in?");
+
+    HidrawDevice::open(&devnode).unwrap_or_else(|err| {
+        panic!(
+            "cannot open {}: {err}\n  install the dev rule:\n    \
+             sudo install -m 644 data/udev/70-mouser-dev.rules /etc/udev/rules.d/",
+            devnode.display()
+        )
+    })
+}
+
+#[test]
+#[ignore = "requires the Zelotes C-18, and CHANGES its active DPI stage"]
+fn the_mouse_accepts_a_dpi_stage_transaction() {
+    // The first thing this project writes to hardware. Three 8-byte Feature
+    // reports and nothing else — no payloads, no tables.
+    //
+    // There is no readback on this device, so passing only proves the writes
+    // were accepted: that the Feature-report path reaches the right
+    // interface, that the checksums are right, and that the 1-based profile
+    // numbering is right. Whether the mouse *obeyed* is something you have to
+    // feel — watch the cursor speed as it runs with --nocapture.
+    //
+    // It leaves the mouse on stage 3. Your DPI button cycles it back.
+    let mut dev = c18_config_device();
+    let mut c18 = C18::new(&mut dev);
+
+    for stage in [1u8, NUM_RESOLUTIONS as u8, 3] {
+        eprintln!("profile 1, DPI stage {stage} of {NUM_RESOLUTIONS}");
+
+        c18.begin().expect("begin");
+        c18.send_command(Command::new(OP_SET_DPI_STAGE, 1, stage))
+            .unwrap_or_else(|err| panic!("set stage {stage}: {err}"));
+        c18.select_and_commit(0).expect("select and commit");
+
+        std::thread::sleep(Duration::from_millis(600));
+    }
+}
+
+#[test]
+#[ignore = "requires the Zelotes C-18"]
+fn a_command_to_the_wrong_interface_is_rejected() {
+    // The negative control, and the only automated evidence that the writes
+    // above genuinely reach hardware rather than being swallowed somewhere.
+    //
+    // Interfaces 0 and 1 declare no vendor 0xFF00 collection and no 8-byte
+    // Feature report, so the device stalls the control transfer — upstream
+    // saw EPIPE here. If this passed on every interface, the config writes
+    // would be going nowhere and the test above would pass regardless.
+    let wrong: Vec<PathBuf> = c18_descriptors()
+        .into_iter()
+        .filter(|(_, descriptor)| !speaks_c18_config(descriptor))
+        .map(|(devnode, _)| devnode)
+        .collect();
+
+    assert_eq!(
+        wrong.len(),
+        2,
+        "expected two non-config interfaces, found {wrong:?}"
+    );
+
+    for devnode in wrong {
+        let Ok(mut dev) = HidrawDevice::open(&devnode) else {
+            eprintln!("{}: no permission, skipping", devnode.display());
+            continue;
+        };
+
+        let result = C18::new(&mut dev).begin();
+        eprintln!("{}: {result:?}", devnode.display());
+
+        assert!(
+            result.is_err(),
+            "{} accepted a C18 command but declares no config collection",
+            devnode.display()
+        );
     }
 }

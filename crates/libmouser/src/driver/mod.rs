@@ -22,6 +22,7 @@ use crate::device::Device;
 use crate::error::{Result, Error};
 use crate::hid::HidrawDevice;
 
+pub mod c18;
 pub mod hidpp20;
 
 /// Everything a driver may look at while probing. A driver may talk to the

@@ -1,0 +1,91 @@
+# Zelotes C-18 vertical mouse.
+#
+# A rebadge. The hardware identifies itself as manufacturer "SOAI", product
+# "USB Gaming Mouse", no serial, bcdDevice 2.11 — nothing on the wire says
+# Zelotes or C-18, so the presentable name has to come from here. Also sold
+# as a Steren in Latin America. Upstream libratbag calls it "SOAI C18 Gaming
+# Mouse"; rename if you would rather match.
+#
+# Driver=c18 matches the driver name in libratbag PR #1877. That driver does
+# NOT exist here yet, so a matching device currently surfaces as
+# `Error::UnknownDriver` — deliberate, and the documented behaviour of
+# `DriverRegistry::with_builtin`. It makes the mouse *recognised* (ours, not
+# yet drivable) rather than *unknown* (skipped silently).
+#
+# ## Prior art
+#
+# The protocol is reverse engineered and documented. Do not start from
+# scratch.
+#
+#   libratbag/libratbag#1526   the support request, closed 2023 as
+#                              "needs a new driver, no volunteer"
+#   libratbag/libratbag#1877   OPEN, unmerged: a complete `driver-c18.c`
+#                              plus `data/devices/soai-c18.device`. MIT,
+#                              © 2026 Padre Adamo — portable into this
+#                              project with attribution.
+#   PadreAdamo/c18_reverseengineer
+#                              PROTOCOL.md, ~1000 lines, from USBPcap
+#                              captures of the vendor software. **No LICENSE
+#                              file**, so treat it as documentation to read,
+#                              not source to copy. Port from the MIT PR.
+#   JoaoCarlosPereira/zelotes-mouse
+#                              a Python control app, also unlicensed.
+#
+# ## The hardware
+#
+# Verified locally from the three report descriptors, and matching the lsusb
+# dump in issue #1526 byte for byte:
+#
+#   iface 0  boot mouse (subclass 01, protocol 02). 5 buttons, 16-bit X/Y,
+#            wheel, AC Pan. No report IDs. Motion only.
+#   iface 1  keyboard (report 0x01), system control (0x02), consumer (0x03),
+#            and a 3-byte Input-only vendor collection at report 0x06.
+#   iface 2  the configuration channel. Usage page 0xFF00, *no report ID*:
+#            64-byte Input, 64-byte Output, 8-byte Feature.
+#
+# All three nodes carry the same bus/vid/pid, so `DeviceMatch=` cannot pick
+# interface 2 and probing must. Upstream's test is
+# `usage_page(0) == 0xff00 && !has_report(1)`; writing to the wrong interface
+# gives EPIPE/STALL.
+#
+# ## What the driver will have to do
+#
+# Capabilities: 2 profiles, 11 buttons, 5 DPI stages, 1 LED, macros up to 96
+# keys. Report rates 125/250/500/1000 Hz. DPI 200–10000, set from a 16-point
+# calibration table with linear interpolation between points — the mapping is
+# not a formula. Per-axis DPI is not supported by the hardware at all.
+#
+# Transactions are always `0x01 begin` → payload → `0x02 select/commit`.
+# Every 8-byte control packet ends in a checksum such that all eight bytes
+# sum to 0xFF (`checksum = 0xFF - sum(bytes[0..=6])`).
+#
+# **Two transports with opposite conventions**, both established empirically
+# with usbmon — this is the part to get right first:
+#
+#   * 8-byte control commands go out as a Feature report (HIDIOCSFEATURE).
+#     The report is genuinely unnumbered, so byte 0 is the opcode itself and
+#     must survive untouched. Prepending a 0x00 report-number byte gets an
+#     immediate EPIPE/STALL. `HidrawDevice::set_feature_report` already
+#     behaves correctly here: it copies the caller's slice verbatim and never
+#     overwrites byte 0.
+#   * 64-byte payloads go out as an Output report (plain `write(2)`), as
+#     **65** bytes with a dummy 0x00 first. The kernel's hidraw write path
+#     strips byte 0 only when it is literally 0x00, so a payload that really
+#     begins with 0x00 — macro headers, zero ack packets — loses a real byte
+#     and is silently corrupted unless the dummy is there.
+#
+# 20 ms between packets; 200 ms after macro writes.
+#
+# **There is no readback.** Nothing can be queried, so probe cannot discover
+# current state and has to assume the defaults. That suits
+# `DeviceBackend::reload`'s no-op default, which the trait docs describe as
+# right for devices whose state libmouser fully owns.
+#
+# Access: data/udev/70-mouser-dev.rules covers this device; without it the
+# nodes are root-only.
+
+[Device]
+Name=Zelotes C-18
+DeviceMatch=usb:12c9:2003
+DeviceType=mouse
+Driver=c18

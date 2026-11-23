@@ -15,3 +15,10 @@
 #
 # Logitech G502 HERO (046d:c08b).
 KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c08b", TAG+="uaccess"
+
+# Zelotes C-18 (12c9:2003), a SOAI-badged vertical mouse. Three hidraw nodes;
+# interface 2 is the configuration one. This grant covers all three, because
+# ATTRS matching walks up to the USB device and cannot select an interface —
+# and narrowing it would not help anyway, since interface 1 is the one that
+# declares a keyboard collection.
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="12c9", ATTRS{idProduct}=="2003", TAG+="uaccess"
