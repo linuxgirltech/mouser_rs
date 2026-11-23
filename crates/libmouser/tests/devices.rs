@@ -92,12 +92,25 @@ fn no_two_entries_claim_the_same_hardware() {
 }
 
 #[test]
-fn every_shipped_device_is_a_mouse_on_the_hidpp20_driver() {
-    // True today because the whole shipped set is Logitech. When the first
-    // non-Logitech device lands, this test is meant to fail and be narrowed.
+fn every_shipped_device_is_a_mouse_on_a_driver_we_name_somewhere() {
+    // Narrowed from "everything is hidpp20" when the Zelotes C-18 landed. The
+    // job is unchanged: catch a `Driver=` typo here, at build time, rather
+    // than as an `Error::UnknownDriver` when someone plugs the device in.
+    //
+    // A name in this list need not be implemented yet — `c18` is not. It
+    // only has to be a name we have decided on. `c18` matches the driver
+    // name in libratbag PR #1877, which this one will be ported from.
+    const NAMED_DRIVERS: &[&str] = &["hidpp20", "c18"];
+
     for entry in shipped_db().entries() {
         assert_eq!(entry.device_type, DeviceType::Mouse, "{}", entry.name);
-        assert_eq!(entry.driver, "hidpp20", "{}", entry.name);
+        assert!(
+            NAMED_DRIVERS.contains(&entry.driver.as_str()),
+            "{} names driver {:?}, which is not in NAMED_DRIVERS — typo, or \
+             a new driver that needs adding to the list",
+            entry.name,
+            entry.driver
+        );
     }
 }
 
@@ -115,6 +128,9 @@ fn known_hardware_resolves_to_the_right_entry() {
         (BusType::Usb, 0x046d, 0x4041, "Logitech MX Master"),
         (BusType::Usb, 0x046d, 0xc08a, "Logitech MX Vertical"),
         (BusType::Bluetooth, 0x046d, 0xb020, "Logitech MX Vertical"),
+        // The first non-Logitech entry, and the first on a driver that does
+        // not exist yet.
+        (BusType::Usb, 0x12c9, 0x2003, "Zelotes C-18"),
     ];
 
     for (bus, vendor, product, want) in cases {
