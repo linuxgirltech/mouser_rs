@@ -17,12 +17,14 @@ use super::*;
 /// int main(void) {
 ///     printf("%08lX\n", (unsigned long)HIDIOCGRAWINFO);
 ///     printf("%08lX\n", (unsigned long)HIDIOCSFEATURE(8));
+///     printf("%08lX\n", (unsigned long)HIDIOCGRDESCSIZE);
+///     printf("%08lX\n", (unsigned long)HIDIOCGRDESC);
 ///     return 0;
 /// }
 /// ```
 #[test]
 fn opcodes_match_the_kernel_headers() {
-    let cases: [(&str, u32, u32); 6] = [
+    let cases: [(&str, u32, u32); 8] = [
         (
             "HIDIOCGRAWINFO",
             ioc(IOC_READ, HID, 0x03, size_of::<HidrawDevinfo>() as u32),
@@ -52,6 +54,16 @@ fn opcodes_match_the_kernel_headers() {
             "HIDIOCSFEATURE(20)",
             ioc(IOC_WRITE | IOC_READ, HID, 0x06, 20),
             0xC014_4806,
+        ),
+        (
+            "HIDIOCGRDESCSIZE",
+            ioc(IOC_READ, HID, 0x01, size_of::<libc::c_int>() as u32),
+            0x8004_4801,
+        ),
+        (
+            "HIDIOCGRDESC",
+            ioc(IOC_READ, HID, 0x02, size_of::<HidrawReportDescriptor>() as u32),
+            0x9004_4802,
         ),
     ];
 
@@ -143,5 +155,69 @@ fn opening_a_missing_node_names_the_path() {
     match err {
         Error::Io { path, .. } => assert_eq!(path.to_str(), Some("/dev/hidraw-does-not-exist")),
         other => panic!("expected Error::Io with a path, got {other:?}"),
+    }
+}
+
+/// `struct hidraw_report_descriptor` has to match the C layout byte for byte,
+/// because the ioctl request number encodes its size — a mismatch names a
+/// different ioctl rather than failing.
+///
+/// Literals again, from the same C program:
+///
+/// ```c
+/// printf("%d\n",  HID_MAX_DESCRIPTOR_SIZE);
+/// printf("%zu\n", sizeof(struct hidraw_report_descriptor));
+/// printf("%zu\n", offsetof(struct hidraw_report_descriptor, size));
+/// printf("%zu\n", offsetof(struct hidraw_report_descriptor, value));
+/// ```
+#[test]
+fn the_report_descriptor_struct_matches_the_c_layout() {
+    assert_eq!(HID_MAX_DESCRIPTOR_SIZE, 4096);
+    assert_eq!(size_of::<HidrawReportDescriptor>(), 4100);
+    assert_eq!(align_of::<HidrawReportDescriptor>(), 4);
+
+    // `size` first is not cosmetic: the kernel reads the length out of the
+    // front of the struct before it writes anything, so a reordered struct
+    // would have it reading the first four descriptor bytes as a length.
+    assert_eq!(std::mem::offset_of!(HidrawReportDescriptor, size), 0);
+    assert_eq!(std::mem::offset_of!(HidrawReportDescriptor, value), 4);
+
+    // No tail padding — 4 + 4096 exactly.
+    assert_eq!(
+        size_of::<HidrawReportDescriptor>(),
+        size_of::<u32>() + HID_MAX_DESCRIPTOR_SIZE
+    );
+}
+
+#[test]
+fn the_descriptor_struct_fits_the_ioctl_size_field() {
+    // 4100 is the largest payload this module puts through `ioc`, and the
+    // size field is only 14 bits. Over `IOC_SIZE_MAX` it would overflow into
+    // the direction bits and silently name something else — the same failure
+    // `feature_ioctl` guards against at runtime, checked here at compile size
+    // instead because this one is a constant.
+    assert!(
+        size_of::<HidrawReportDescriptor>() <= IOC_SIZE_MAX as usize,
+        "4100 must fit the 14-bit size field (max {IOC_SIZE_MAX})"
+    );
+
+    // And the encoded opcode really does round-trip that size back out.
+    let req = ioc(IOC_READ, HID, 0x02, size_of::<HidrawReportDescriptor>() as u32);
+    let encoded_size = (req >> IOC_SIZESHIFT) & IOC_SIZE_MAX;
+    assert_eq!(encoded_size, 4100);
+}
+
+#[test]
+fn the_descriptor_ioctls_are_read_direction() {
+    // Both are `_IOR`, so only `IOC_READ` is set. Worth pinning because
+    // `HIDIOCGRDESC` behaves as in-out — the kernel reads `size` before
+    // writing `value` — and the direction bits do not say so. If someone
+    // "corrects" the direction to `IOC_WRITE | IOC_READ` to reflect that, the
+    // opcode changes and the call stops working.
+    for nr in [0x01, 0x02] {
+        let req = ioc(IOC_READ, HID, nr, 4);
+        let dir = req >> IOC_DIRSHIFT;
+        assert_eq!(dir, IOC_READ, "nr {nr:#04x} should be _IOR");
+        assert_ne!(dir, IOC_WRITE | IOC_READ, "nr {nr:#04x} is not _IOWR");
     }
 }

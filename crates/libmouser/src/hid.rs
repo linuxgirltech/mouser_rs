@@ -66,6 +66,29 @@ pub struct HidrawDevinfo {
     pub product: i16,
 }
 
+/// `HID_MAX_DESCRIPTOR_SIZE` from `linux/hid.h`. The kernel will not hand
+/// back more than this, and rejects a `size` field asking for more.
+pub const HID_MAX_DESCRIPTOR_SIZE: usize = 4096;
+
+/// Mirrors `struct hidraw_report_descriptor`.
+///
+/// **In-out despite being `_IOR`.** The kernel reads `size` to learn how many
+/// bytes you are willing to receive, *then* writes that many into `value`. It
+/// never writes the real length back, so the caller keeps the length it asked
+/// for. Set both fields before the call — uninitialised memory satisfies
+/// "valid for writes" and still gives the kernel garbage to read.
+#[repr(C)]
+pub struct HidrawReportDescriptor {
+    pub size: u32,
+    pub value: [u8; HID_MAX_DESCRIPTOR_SIZE],
+}
+
+// The ioctl request number encodes this size, so a mismatch with the C struct
+// would silently name a different ioctl. 4100 with `size` at 0 and `value` at
+// 4, verified against this machine's `linux/hidraw.h`.
+const _: () = assert!(size_of::<HidrawReportDescriptor>() == 4100);
+const _: () = assert!(align_of::<HidrawReportDescriptor>() == 4);
+
 /// What the kernel knows about a hidraw node.
 #[derive(Debug, Clone)]
 pub struct HidInfo {
@@ -162,6 +185,51 @@ impl HidrawDevice {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// The node's HID report descriptor.
+    ///
+    /// `HIDIOCGRDESCSIZE` for the length, then `HIDIOCGRDESC` for the bytes.
+    /// Returns only the valid prefix — the kernel zero-fills nothing and does
+    /// not report back how much it wrote, so the length from the first call is
+    /// the authority.
+    ///
+    /// This is how a driver tells one of a device's nodes from another when
+    /// they share a bus/vid/pid, which the device database cannot do:
+    /// `hidpp20` wants the node declaring report `0x10` on usage page
+    /// `0xFF00`, and `c18` the one declaring a 64-byte pair with an 8-byte
+    /// feature report.
+    ///
+    /// Takes `&self`: both ioctls only read device state.
+    ///
+    /// Two things to get right, both of which fall to the caller rather than
+    /// the kernel:
+    ///
+    /// * `HIDIOCGRDESCSIZE` yields a C `int`, so it is **signed**. A negative
+    ///   length cast to `usize` becomes enormous and the slice below panics.
+    ///   Reject negatives and anything above [`HID_MAX_DESCRIPTOR_SIZE`].
+    /// * Slice by that length, not by [`HidrawReportDescriptor::size`] after
+    ///   the call and not by the whole array.
+    pub fn report_descriptor(&self) -> Result<Vec<u8>> {
+        let fd = self.file.as_fd();
+
+        const SIZE_REQ: u32 = ioc(IOC_READ, HID, 0x01, size_of::<libc::c_int>() as u32);
+        let mut len: libc::c_int = 0;
+        
+        unsafe { Self::ioctl(fd, SIZE_REQ, &raw mut len)? };
+
+        if len < 0 || len > HID_MAX_DESCRIPTOR_SIZE as i32 {
+            return Err(Error::invalid("report descriptor length", format!("HIDIOCGRDESCSIZE returned {len}, outside 0..={HID_MAX_DESCRIPTOR_SIZE}")))
+        }
+
+        const DESC_REQ: u32 = ioc(IOC_READ, HID, 0x02, size_of::<HidrawReportDescriptor>() as u32);
+        let mut desc = HidrawReportDescriptor {
+            size: len as u32,
+            value: [0; HID_MAX_DESCRIPTOR_SIZE],
+        };
+        unsafe { Self::ioctl(fd, DESC_REQ, &raw mut desc)? };
+
+        Ok(desc.value[..len as usize].to_vec())
     }
 
     /// `HIDIOCSFEATURE` / `HIDIOCGFEATURE` — same shape, different `nr`.

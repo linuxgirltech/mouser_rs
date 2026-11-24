@@ -263,12 +263,6 @@ impl<'a> C18<'a> {
     /// cannot tell them apart and this is the only discriminator. Upstream
     /// tests `usage_page(0) == 0xff00 && !has_report(1)`; writing to the wrong
     /// interface earns an `EPIPE`/stall.
-    ///
-    /// **Blocked:** this needs the report descriptor, and [`HidrawDevice`]
-    /// cannot fetch one — `HIDIOCGRDESCSIZE` and `HIDIOCGRDESC` are not
-    /// wrapped in `hid`. Either add them, or keep the sysfs path alongside the
-    /// node and read `device/report_descriptor` the way `tests/hardware.rs`
-    /// does.
     pub fn speaks_c18(hidraw: &HidrawDevice) -> Result<bool> {
         todo!()
     }

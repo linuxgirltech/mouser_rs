@@ -29,6 +29,7 @@
 #![allow(unused_variables, dead_code)]
 
 pub mod db;
+pub mod descriptor;
 pub mod device;
 pub mod driver;
 pub mod error;

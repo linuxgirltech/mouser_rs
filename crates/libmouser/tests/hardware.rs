@@ -20,6 +20,7 @@ use libmouser::driver::hidpp20::{
     FEATURE_ROOT, Hidpp20, Message,
 };
 use libmouser::enumerate::{HotplugEvent, Monitor, enumerate};
+use libmouser::hid::HID_MAX_DESCRIPTOR_SIZE;
 use libmouser::{BusType, HidrawDevice};
 
 /// Vendor and product of the development device.
@@ -720,4 +721,129 @@ fn a_command_to_the_wrong_interface_is_rejected() {
             devnode.display()
         );
     }
+}
+
+// ============================================== report descriptors ========
+
+#[test]
+#[ignore = "requires real hardware"]
+fn the_report_descriptor_ioctl_agrees_with_sysfs() {
+    // Two independent paths to the same bytes: `HIDIOCGRDESCSIZE` +
+    // `HIDIOCGRDESC` through the device node, versus
+    // `device/report_descriptor` in sysfs. If they agree, both the ioctl pair
+    // and the length slicing are right — neither could be checked against the
+    // other inside the library.
+    //
+    // This is the test that would catch slicing by the whole 4096-byte array,
+    // or by `HidrawReportDescriptor::size` after the call, or forgetting to
+    // set `size` before it.
+    let mut checked = 0;
+
+    for node in enumerate().expect("enumerate") {
+        let Some(from_sysfs) = report_descriptor(&node.syspath) else {
+            continue; // sysfs entry going away mid-scan
+        };
+        let Ok(dev) = HidrawDevice::open(&node.devnode) else {
+            continue; // no permission for this one; not what we are testing
+        };
+
+        let from_ioctl = dev
+            .report_descriptor()
+            .unwrap_or_else(|err| panic!("{}: {err}", node.devnode.display()));
+
+        assert_eq!(
+            from_ioctl.len(),
+            from_sysfs.len(),
+            "{}: ioctl gave {} bytes, sysfs {}",
+            node.devnode.display(),
+            from_ioctl.len(),
+            from_sysfs.len()
+        );
+        assert_eq!(
+            from_ioctl,
+            from_sysfs,
+            "{} descriptors differ\n  ioctl: {:02x?}\n  sysfs: {:02x?}",
+            node.devnode.display(),
+            from_ioctl,
+            from_sysfs
+        );
+
+        println!("{}: {} bytes agree", node.devnode.display(), from_ioctl.len());
+        checked += 1;
+    }
+
+    assert!(
+        checked >= 2,
+        "only {checked} nodes were readable — install the dev rule, or this \
+         proves very little"
+    );
+}
+
+#[test]
+#[ignore = "requires real hardware"]
+fn descriptors_are_never_empty_and_fit_the_kernel_limit() {
+    for node in enumerate().expect("enumerate") {
+        let Ok(dev) = HidrawDevice::open(&node.devnode) else {
+            continue;
+        };
+
+        let descriptor = dev.report_descriptor().expect("report_descriptor");
+
+        // A HID device without a report descriptor cannot exist: the kernel
+        // needs one to have bound hid-generic in the first place.
+        assert!(
+            !descriptor.is_empty(),
+            "{} returned an empty descriptor",
+            node.devnode.display()
+        );
+        assert!(
+            descriptor.len() <= HID_MAX_DESCRIPTOR_SIZE,
+            "{} returned {} bytes, over the kernel's limit",
+            node.devnode.display(),
+            descriptor.len()
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires the Zelotes C-18"]
+fn the_c18_config_interface_is_identifiable_through_the_ioctl() {
+    // Closes the loop for `C18::speaks_c18`, which has to work from the
+    // ioctl rather than from sysfs — a `HidrawDevice` keeps no syspath.
+    //
+    // Until now every descriptor check in this file read sysfs, so the
+    // predicates were never exercised against the bytes the driver will
+    // actually see.
+    let dev = c18_config_device();
+    let descriptor = dev.report_descriptor().expect("report_descriptor");
+
+    println!("{} bytes: {:02x?}", descriptor.len(), descriptor);
+
+    assert!(
+        speaks_c18_config(&descriptor),
+        "the config interface should satisfy the C18 predicate"
+    );
+    assert!(
+        !speaks_hidpp(&descriptor),
+        "the C-18 must not look like a HID++ device"
+    );
+}
+
+#[test]
+#[ignore = "requires the G502"]
+fn the_g502_hidpp_node_is_identifiable_through_the_ioctl() {
+    // The same loop closed for `Hidpp20Driver::probe`.
+    let dev = g502_hidpp_device();
+    let descriptor = dev.report_descriptor().expect("report_descriptor");
+
+    println!("{} bytes: {:02x?}", descriptor.len(), descriptor);
+
+    assert!(
+        speaks_hidpp(&descriptor),
+        "the vendor node should satisfy the HID++ predicate"
+    );
+    assert!(
+        !speaks_c18_config(&descriptor),
+        "a HID++ device must not look like a C-18"
+    );
 }

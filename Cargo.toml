@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
-repository = "https://github.com/linuxtechgirl/mouser_rs"
+repository = "https://github.com/linuxgirltech/mouser_rs"
 
 [workspace.dependencies]
 libmouser = { path = "crates/libmouser", version = "0.1.0" }
