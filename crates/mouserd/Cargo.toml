@@ -16,3 +16,9 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 zbus.workspace = true
+
+[features]
+# Own `org.freedesktop.ratbag_devel1` rather than `org.freedesktop.ratbag1`,
+# so a development build does not fight an installed ratbagd for the name.
+# Piper understands the devel name natively. See `src/names.rs`.
+devel = []

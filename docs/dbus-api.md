@@ -1,7 +1,9 @@
 # D-Bus API
 
-Compact reference for what `mouserd` exports. The shape follows ratbagd's
-published API; the full upstream prose is installed locally at
+Compact reference for what `mouserd` exports. This *is* ratbagd's published
+API — mouserd owns `org.freedesktop.ratbag1` and these exact interfaces, so
+Piper and `ratbagctl` drive it unchanged. The full upstream prose is
+installed locally at
 `/usr/share/doc/libratbag/html/_sources/dbus.rst.txt` and is worth reading
 once in full before implementing the daemon.
 
@@ -25,7 +27,7 @@ tolerate a `Resync` arriving long after `Commit()` returned.
 
 ## Manager
 
-Path: `/org/freedesktop/mouser1`
+Path: `/org/freedesktop/ratbag1`
 
 | Member | Type | Flags | Notes |
 |---|---|---|---|
@@ -130,5 +132,5 @@ All based at `0x40000000` (`1 << 30`):
 ## Object paths
 
 Constructed from the device for debuggability, e.g.
-`/org/freedesktop/mouser/button/hidraw0/p0/b10`. **Clients must not rely on
+`/org/freedesktop/ratbag1/button/hidraw0/p0/b10`. **Clients must not rely on
 constructing these** — they walk the `ao` properties instead.

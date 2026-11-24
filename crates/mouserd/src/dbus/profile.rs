@@ -1,4 +1,4 @@
-//! `org.freedesktop.mouser1.Profile` — one stored configuration.
+//! `org.freedesktop.ratbag1.Profile` — one stored configuration.
 
 use zbus::OwnedObjectPath;
 use zbus::interface;
@@ -13,7 +13,14 @@ pub struct ProfileIface {
     pub led_paths: Vec<OwnedObjectPath>,
 }
 
-#[interface(name = "org.freedesktop.mouser1.Profile")]
+#[cfg_attr(
+    not(feature = "devel"),
+    interface(name = "org.freedesktop.ratbag1.Profile")
+)]
+#[cfg_attr(
+    feature = "devel",
+    interface(name = "org.freedesktop.ratbag_devel1.Profile")
+)]
 impl ProfileIface {
     /// `u`, read-only, constant. Zero-based.
     #[zbus(property)]

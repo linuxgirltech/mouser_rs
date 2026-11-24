@@ -73,11 +73,24 @@ the same time.
 
 ## Compatibility
 
-`mouserd` owns `org.freedesktop.mouser1` and its own object paths, so it does
-not collide with a running `ratbagd`. To make it a drop-in replacement
-instead — so Piper and `ratbagctl` drive it unchanged — change the three
-constants in `crates/mouserd/src/names.rs` and rename the files in
-`data/dbus/`. The interfaces are otherwise the same shape.
+`mouserd` is a drop-in `ratbagd`. It owns `org.freedesktop.ratbag1` and
+exports the same interfaces under the same object paths, so **Piper and
+`ratbagctl` drive it unchanged** — nothing is patched on their side. That is
+the point: a device mouserd supports and libratbag does not becomes
+configurable in a GUI the user already has installed.
+
+The cost is that it **conflicts with `ratbagd`** — two processes cannot own
+one well-known name, so a package needs `Conflicts=libratbag`.
+
+For development, build with `--features devel` to own
+`org.freedesktop.ratbag_devel1` instead, which Piper understands natively.
+That lets mouserd run alongside the system `ratbagd`, keeping `ratbagctl`
+available as an oracle. Install `data/dbus/org.freedesktop.ratbag_devel1.conf`
+for it; like the udev rule, that file is development-only and must not ship.
+
+`Manager.APIVersion` must equal libratbag's `ratbagd_api_version` (currently
+`2`) exactly — Piper compares with `!=` and refuses to start on a mismatch
+without naming the cause.
 
 ## Licence
 
