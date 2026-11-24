@@ -1,4 +1,4 @@
-//! `org.freedesktop.mouser1.Led` — one LED.
+//! `org.freedesktop.ratbag1.Led` — one LED.
 
 use zbus::interface;
 
@@ -10,7 +10,14 @@ pub struct LedIface {
     pub index: u32,
 }
 
-#[interface(name = "org.freedesktop.mouser1.Led")]
+#[cfg_attr(
+    not(feature = "devel"),
+    interface(name = "org.freedesktop.ratbag1.Led")
+)]
+#[cfg_attr(
+    feature = "devel",
+    interface(name = "org.freedesktop.ratbag_devel1.Led")
+)]
 impl LedIface {
     /// `u`, read-only, constant.
     #[zbus(property)]

@@ -1,4 +1,4 @@
-//! `org.freedesktop.mouser1.Button` — one button binding.
+//! `org.freedesktop.ratbag1.Button` — one button binding.
 
 use zbus::OwnedVariant;
 use zbus::interface;
@@ -11,7 +11,14 @@ pub struct ButtonIface {
     pub index: u32,
 }
 
-#[interface(name = "org.freedesktop.mouser1.Button")]
+#[cfg_attr(
+    not(feature = "devel"),
+    interface(name = "org.freedesktop.ratbag1.Button")
+)]
+#[cfg_attr(
+    feature = "devel",
+    interface(name = "org.freedesktop.ratbag_devel1.Button")
+)]
 impl ButtonIface {
     /// `u`, read-only, constant.
     #[zbus(property)]

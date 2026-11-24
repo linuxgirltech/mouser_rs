@@ -1,4 +1,4 @@
-//! `org.freedesktop.mouser1.Resolution` — one dpi setting.
+//! `org.freedesktop.ratbag1.Resolution` — one dpi setting.
 
 use zbus::OwnedVariant;
 use zbus::interface;
@@ -11,7 +11,14 @@ pub struct ResolutionIface {
     pub index: u32,
 }
 
-#[interface(name = "org.freedesktop.mouser1.Resolution")]
+#[cfg_attr(
+    not(feature = "devel"),
+    interface(name = "org.freedesktop.ratbag1.Resolution")
+)]
+#[cfg_attr(
+    feature = "devel",
+    interface(name = "org.freedesktop.ratbag_devel1.Resolution")
+)]
 impl ResolutionIface {
     /// `u`, read-only, constant.
     #[zbus(property)]

@@ -1,5 +1,5 @@
 [D-BUS Service]
-Name=org.freedesktop.mouser1
+Name=org.freedesktop.ratbag1
 Exec=/usr/bin/mouserd
 User=root
 SystemdService=mouserd.service

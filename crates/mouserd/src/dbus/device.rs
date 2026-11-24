@@ -1,4 +1,4 @@
-//! `org.freedesktop.mouser1.Device` — one device.
+//! `org.freedesktop.ratbag1.Device` — one device.
 
 use zbus::OwnedObjectPath;
 use zbus::interface;
@@ -21,7 +21,14 @@ impl DeviceIface {
     }
 }
 
-#[interface(name = "org.freedesktop.mouser1.Device")]
+#[cfg_attr(
+    not(feature = "devel"),
+    interface(name = "org.freedesktop.ratbag1.Device")
+)]
+#[cfg_attr(
+    feature = "devel",
+    interface(name = "org.freedesktop.ratbag_devel1.Device")
+)]
 impl DeviceIface {
     /// `s`, read-only, constant. `usb:046d:c08b:0`, `bluetooth:…`, or
     /// `unknown`. A device whose model cannot be determined is a bug in the

@@ -1,4 +1,4 @@
-//! `org.freedesktop.mouser1.Manager` — the entry point.
+//! `org.freedesktop.ratbag1.Manager` — the entry point.
 
 use zbus::OwnedObjectPath;
 use zbus::interface;
@@ -16,7 +16,14 @@ impl Manager {
     }
 }
 
-#[interface(name = "org.freedesktop.mouser1.Manager")]
+#[cfg_attr(
+    not(feature = "devel"),
+    interface(name = "org.freedesktop.ratbag1.Manager")
+)]
+#[cfg_attr(
+    feature = "devel",
+    interface(name = "org.freedesktop.ratbag_devel1.Manager")
+)]
 impl Manager {
     /// `i`, read-only, constant.
     ///

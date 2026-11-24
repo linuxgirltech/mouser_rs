@@ -4,7 +4,7 @@ Documentation=https://github.com/linuxtechgirl/mouser_rs
 
 [Service]
 Type=dbus
-BusName=org.freedesktop.mouser1
+BusName=org.freedesktop.ratbag1
 ExecStart=/usr/bin/mouserd
 
 # Raw HID write access is the whole point of this daemon, so it needs the
