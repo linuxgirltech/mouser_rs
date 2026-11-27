@@ -53,6 +53,11 @@ pub const FEATURE_REPORT_RATE: u16 = 0x8060;
 pub const FEATURE_COLOR_LED_EFFECTS: u16 = 0x8070;
 pub const FEATURE_ONBOARD_PROFILES: u16 = 0x8100;
 
+/// Interface 2's usage page. Vendor-defined pages are 0xFF00..=0xFFFF; this
+/// device uses the first. Its keyboard interface uses 0xFF01, so compare
+/// exactly rather than testing the range.
+const CONFIG_USAGE_PAGE: u16 = 0xff00;
+
 /// One HID++ message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {

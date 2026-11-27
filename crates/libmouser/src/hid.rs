@@ -29,6 +29,7 @@ use std::ffi::CStr;
 use std::fs::{self, File};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crate::Error;
 use crate::error::Result;
@@ -280,6 +281,104 @@ impl HidrawDevice {
         use std::io::Read;
         self.file.read(buf).map_err(|err| Error::io(&self.path, err))
     }
+
+    /// Read one input report, giving up after `timeout`.
+    ///
+    /// Returns [`Error::Timeout`] when nothing arrives in time. That is a
+    /// routine outcome, not a malfunction: the G502 presents two nodes with
+    /// identical bus/vid/pid, `write(2)` to the wrong one succeeds, and no
+    /// reply ever comes. Without a deadline here a probe of the boot-mouse
+    /// interface blocks forever.
+    ///
+    /// Waits with `poll(2)` rather than a non-blocking fd and a retry loop:
+    /// the kernel does the waiting, and the `read(2)` only happens once a
+    /// report is already buffered.
+    ///
+    /// ## What to watch for
+    ///
+    /// * **`EINTR` must be retried, and must not reset the clock.** A signal
+    ///   makes `poll` return `-1`/`EINTR` having waited an arbitrary amount.
+    ///   Retrying with the original `timeout` means a process taking signals
+    ///   never times out, so hold an absolute deadline and recompute the
+    ///   remaining time each pass — saturating, since a plain subtraction
+    ///   panics once the deadline is behind you.
+    /// * **`poll`'s timeout is a `c_int` of milliseconds.** `Duration` is
+    ///   `u128` nanoseconds, so the conversion can overflow at the top and
+    ///   truncate to zero at the bottom. A truncated `0` is "return
+    ///   immediately" to `poll`, which turns the last sub-millisecond of a
+    ///   wait into a busy-spin.
+    /// * **`revents` carries bits you did not ask for.** `POLLERR`,
+    ///   `POLLHUP` and `POLLNVAL` arrive whatever `events` said — `POLLHUP`
+    ///   is what an unplugged mouse looks like mid-wait. Test for them
+    ///   explicitly: falling through to the `read` on a hung-up fd yields
+    ///   `Ok(0)`, and a caller cannot tell that from a zero-length report.
+    ///
+    /// ## Safety of the `poll` call
+    ///
+    /// Much weaker than [`HidrawDevice::ioctl`]'s contract: `poll` needs
+    /// `fds` to point at `nfds` initialised, writable `pollfd`s, because it
+    /// writes `revents`. A `&mut libc::pollfd` as `*mut` with `nfds: 1`
+    /// satisfies that outright — no size field to get wrong.
+    pub fn read_input_report_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> Result<usize> {
+        let deadline = Instant::now() + timeout;
+        loop  {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let mut pfd = libc::pollfd {
+                fd: self.file.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: one initialized, writable pollfd; nfds matches.
+            let ready = unsafe { libc::poll(&raw mut pfd, 1, poll_timeout_ms(remaining)) };
+            if ready < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(Error::io(&self.path, err));
+            } else if ready == 0 {
+                return Err(Error::Timeout { path: self.path.clone(), waited: timeout })
+            } else {
+                let revents = pfd.revents;
+                if revents & libc::POLLIN != 0{
+                    
+                }
+                return self.read_input_report(buf);
+            }
+
+        }
+    }
+
+    /// Build a device around an arbitrary fd, bypassing the identity ioctls.
+    ///
+    /// Test-only. [`HidrawDevice::open`] cannot serve a unit test: it issues
+    /// `HIDIOCGRAWINFO`, which anything that is not a hidraw node answers
+    /// with `ENOTTY`. This lets a test wrap a pipe — a readable fd that never
+    /// becomes ready is exactly the device that never answers.
+    #[cfg(test)]
+    fn from_parts(file: File, path: impl Into<PathBuf>, info: HidInfo) -> Self {
+        Self {
+            file,
+            path: path.into(),
+            info,
+        }
+    }
+}
+
+/// `poll`'s timeout argument for a remaining duration.
+///
+/// `poll(2)` takes milliseconds as a `c_int`, in which **a negative value
+/// means wait forever**. That makes this conversion the sharpest edge in
+/// [`HidrawDevice::read_input_report_timeout`]: [`Duration::as_millis`]
+/// returns `u128`, so `as c_int` on anything past about 24.8 days wraps to a
+/// negative and silently turns a bounded wait into an unbounded one — the
+/// exact hang the deadline exists to prevent.
+///
+/// So saturate at `c_int::MAX` rather than cast, and never return a negative
+/// value. `c_int::MAX` milliseconds is 24.8 days, which is indistinguishable
+/// from forever for a mouse but is still a number `poll` will count down.
+fn poll_timeout_ms(remaining: Duration) -> libc::c_int {
+    libc::c_int::try_from(remaining.as_millis()).unwrap_or(libc::c_int::MAX)
 }
 
 /// Unit tests live outside `src/`, but compile as a child module of `hid` so

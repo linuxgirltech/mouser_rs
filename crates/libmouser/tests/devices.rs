@@ -128,6 +128,11 @@ fn known_hardware_resolves_to_the_right_entry() {
         (BusType::Usb, 0x046d, 0x4041, "Logitech MX Master"),
         (BusType::Usb, 0x046d, 0xc08a, "Logitech MX Vertical"),
         (BusType::Bluetooth, 0x046d, 0xb020, "Logitech MX Vertical"),
+        // Behind a Unifying receiver. `hid-logitech-dj` gives the child HID
+        // device this PID, so it is what `HIDIOCGRAWINFO` reports and what
+        // `DeviceMatch` has to match — the receiver's own USB ids never reach
+        // the database.
+        (BusType::Usb, 0x046d, 0x407b, "Logitech MX Vertical"),
         // The first non-Logitech entry, and the first on a driver that does
         // not exist yet.
         (BusType::Usb, 0x12c9, 0x2003, "Zelotes C-18"),

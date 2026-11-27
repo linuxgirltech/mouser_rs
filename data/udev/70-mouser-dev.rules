@@ -22,3 +22,19 @@ KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="046d", ATTRS{idProduct
 # and narrowing it would not help anyway, since interface 1 is the one that
 # declares a keyboard collection.
 KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="12c9", ATTRS{idProduct}=="2003", TAG+="uaccess"
+
+# Logitech Unifying Receiver (046d:c52b), for the MX Vertical paired to it.
+#
+# Note the product id: this is the *receiver's*, not the mouse's. `ATTRS`
+# matching walks up the sysfs parent chain to the USB device, and with a
+# dongle that is the receiver — the mouse has no USB presence of its own. The
+# `usb:046d:407b` in `devices/logitech-mx-vertical.device` is the id
+# `hid-logitech-dj` gives the child HID device, which is what HIDIOCGRAWINFO
+# reports and therefore what `DeviceMatch` sees. udev never sees it, so a rule
+# written against 407b matches nothing and fails silently as "no writable node".
+#
+# This grant is broader than the two above, and knowingly so: a receiver can
+# have up to six devices paired to it, so write access to its node is write
+# access to every one of them. If you ever pair a keyboard to this receiver,
+# revisit this line.
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c52b", TAG+="uaccess"

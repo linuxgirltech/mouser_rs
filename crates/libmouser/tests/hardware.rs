@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
+use libmouser::descriptor::ReportDescriptor;
 use libmouser::driver::c18::{C18, Command, NUM_RESOLUTIONS, OP_SET_DPI_STAGE};
 use libmouser::driver::hidpp20::{
     DEVICE_INDEX_WIRED, FEATURE_ADJUSTABLE_DPI, FEATURE_COLOR_LED_EFFECTS,
@@ -827,6 +828,14 @@ fn the_c18_config_interface_is_identifiable_through_the_ioctl() {
         !speaks_hidpp(&descriptor),
         "the C-18 must not look like a HID++ device"
     );
+
+    // The real predicate, cross-checked against the naive one above. The
+    // helper is a byte-subsequence search; `speaks_c18` walks item boundaries.
+    // Two independent implementations on the bytes the driver will see.
+    assert!(
+        C18::speaks_c18(&dev).expect("speaks_c18"),
+        "C18::speaks_c18 disagrees with the byte search on the live descriptor"
+    );
 }
 
 #[test]
@@ -846,4 +855,129 @@ fn the_g502_hidpp_node_is_identifiable_through_the_ioctl() {
         !speaks_c18_config(&descriptor),
         "a HID++ device must not look like a C-18"
     );
+
+    // The strongest negative control there is: this node *also* declares
+    // usage page 0xFF00, so only the report-ID set separates it from the
+    // C-18's configuration interface. If `is_unnumbered` were ever weakened
+    // into a "no report 1" check, this is where it would show up.
+    assert!(
+        !C18::speaks_c18(&dev).expect("speaks_c18"),
+        "C18::speaks_c18 claimed the G502's HID++ node"
+    );
+
+    let parsed = ReportDescriptor::parse(&descriptor).expect("parse");
+    assert!(
+        parsed.has_usage_page(0xff00) && parsed.has_report(0x10),
+        "pages {:04x?} reports {:02x?}",
+        parsed.usage_pages(),
+        parsed.report_ids()
+    );
+}
+
+// ============================================== Logitech MX Vertical ======
+
+/// The MX Vertical as `hid-logitech-dj` presents it behind a Unifying
+/// receiver.
+///
+/// These are the *child* HID device's ids, which is what `HIDIOCGRAWINFO`
+/// reports and what `devices/logitech-mx-vertical.device` matches. The
+/// receiver's own ids are `046d:c52b` and no device file claims them, so the
+/// receiver node resolves to `Error::UnknownDevice` and is skipped — which is
+/// the correct outcome, not a gap.
+const MX_VERTICAL: (u16, u16) = (0x046d, 0x407b);
+
+/// Which `device_index` do replies from a receiver-paired device carry?
+///
+/// A wired device answers with `0xff` ([`DEVICE_INDEX_WIRED`]); a device
+/// behind a receiver lives at one of six slots. `hid-logitech-dj` sits in
+/// between and may rewrite the index in either direction, so this is a
+/// measurement rather than an assertion of something already known.
+///
+/// It matters because [`Hidpp20::is_reply_to`] rejects a reply whose
+/// `device_index` differs from the request's. If the kernel reports the real
+/// slot while we send `0xff`, every reply looks unmatched and `request` spins
+/// through its skip budget and times out — a failure that looks like silent
+/// hardware rather than an addressing mistake.
+///
+/// Deliberately not using `Hidpp20::request`: this has to work before that
+/// function exists, and it is the thing that tells us what it must accept.
+#[test]
+#[ignore = "requires an MX Vertical on a Unifying receiver"]
+fn the_mx_vertical_reveals_which_device_index_its_replies_carry() {
+    let path = hidpp_node(MX_VERTICAL.0, MX_VERTICAL.1)
+        .expect("no HID++ node for 046d:407b — is the mouse paired and awake?");
+    println!("pinging {}", path.display());
+
+    // getProtocolVersion on the root feature, as in the G502 ping. The final
+    // byte is echoed back, which is what marks a reply as ours.
+    const PING: u8 = 0x5a;
+    let request = [0x10u8, DEVICE_INDEX_WIRED, 0x00, 0x1a, 0x00, 0x00, PING];
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = HidrawDevice::open(&path).and_then(|mut dev| {
+            dev.write_output_report(&request)?;
+            let mut buf = [0u8; 20];
+            let n = dev.read_input_report(&mut buf)?;
+            Ok(buf[..n].to_vec())
+        });
+        let _ = tx.send(result);
+    });
+
+    let reply = match rx.recv_timeout(Duration::from_secs(3)) {
+        Ok(Ok(reply)) => reply,
+        Ok(Err(err)) => panic!("hidraw error: {err}"),
+        Err(mpsc::RecvTimeoutError::Timeout) => panic!(
+            "no reply in 3s to a device_index of {DEVICE_INDEX_WIRED:#04x}. The dj driver \
+             is not rewriting it, so HID++ has to go through the receiver node \
+             (046d:c52b) with the mouse addressed at one of indices 1..=6"
+        ),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("the worker thread panicked; its message is above")
+        }
+    };
+
+    println!("reply: {reply:02x?}");
+    println!("  report id    {:#04x}", reply[0]);
+    println!("  device index {:#04x}  <-- the answer", reply[1]);
+    println!("  feature index{:#04x}", reply[2]);
+    println!("  function     {:#04x}", reply[3]);
+
+    assert!(
+        matches!(reply[0], 0x10 | 0x11),
+        "unexpected report id: {reply:02x?}"
+    );
+
+    // The G502 answers a short ping with a long report. No reason to expect a
+    // receiver-paired device to behave differently, but it is asserted here
+    // because `request` sizes its read from the reply's own report id.
+    let expected_len = if reply[0] == 0x10 { 7 } else { 20 };
+    assert_eq!(reply.len(), expected_len, "report {:#04x}", reply[0]);
+
+    assert_ne!(reply[2], 0x8f, "HID++ 1.0 error: {reply:02x?}");
+    assert_ne!(reply[2], 0xff, "HID++ 2.0 error: {reply:02x?}");
+
+    // The echoed ping byte is the only proof this is a reply to *our* request
+    // and not an unsolicited notification that happened to arrive first.
+    assert_eq!(
+        reply[6], PING,
+        "the ping byte was not echoed, so this is not our reply: {reply:02x?}"
+    );
+
+    // The measurement. Both answers are legitimate; which one we get decides
+    // whether `Hidpp20Driver::probe` needs receiver enumeration.
+    assert!(
+        reply[1] == DEVICE_INDEX_WIRED || (0x01..=0x06).contains(&reply[1]),
+        "device index {:#04x} is neither wired nor a receiver slot: {reply:02x?}",
+        reply[1]
+    );
+    if reply[1] == DEVICE_INDEX_WIRED {
+        println!("\n=> dj rewrites the index; 0xff works and probe needs no receiver support");
+    } else {
+        println!(
+            "\n=> paired at slot {:#04x}; probe must discover the index, and \
+             `is_reply_to` must be given the real one",
+            reply[1]
+        );
+    }
 }

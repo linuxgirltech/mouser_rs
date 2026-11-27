@@ -1,6 +1,7 @@
 //! Crate-wide error type.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -57,6 +58,12 @@ pub enum Error {
 
     #[error("{0}")]
     Other(String),
+
+    /// The device did not answer in time. Routine when probing a node that
+    /// does not speak the protocol, so callers walking candidate nodes treat
+    /// it as "not this one" rather than a hard failure.
+    #[error("{path}: no response in {waited:?}")]
+    Timeout { path: PathBuf, waited: Duration },
 }
 
 impl Error {

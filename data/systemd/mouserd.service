@@ -1,6 +1,6 @@
 [Unit]
 Description=libmouser device configuration daemon
-Documentation=https://github.com/linuxtechgirl/mouser_rs
+Documentation=https://github.com/linuxgirltech/mouser_rs
 
 [Service]
 Type=dbus

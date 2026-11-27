@@ -53,6 +53,7 @@
 
 use std::time::Duration;
 
+use crate::descriptor::ReportDescriptor;
 use crate::driver::{DeviceBackend, Driver, ProbeContext, ProbeResult};
 use crate::error::{Result, Error};
 use crate::hid::HidrawDevice;
@@ -145,6 +146,11 @@ pub const DPI_CALIBRATION: [(u32, u8); 16] = [
 /// therefore leave `separate_xy` unset.
 pub const DPI_STAGE_OFFSETS: [(usize, usize); NUM_RESOLUTIONS] =
     [(20, 28), (21, 29), (22, 30), (23, 31), (24, 32)];
+
+/// Interface 2's usage page. Vendor-defined pages are 0xFF00..=0xFFFF; this
+/// device uses the first. Its keyboard interface uses 0xFF01, so compare
+/// exactly rather than testing the range.
+const CONFIG_USAGE_PAGE: u16 = 0xff00;
 
 // ----------------------------------------------------------------- helpers ---
 
@@ -264,7 +270,8 @@ impl<'a> C18<'a> {
     /// tests `usage_page(0) == 0xff00 && !has_report(1)`; writing to the wrong
     /// interface earns an `EPIPE`/stall.
     pub fn speaks_c18(hidraw: &HidrawDevice) -> Result<bool> {
-        todo!()
+        let descriptor = ReportDescriptor::parse(&hidraw.report_descriptor()?)?;
+        Ok(descriptor.has_usage_page(CONFIG_USAGE_PAGE) && descriptor.is_unnumbered())
     }
 
     /// Send an 8-byte control command as a Feature report, then wait

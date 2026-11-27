@@ -178,7 +178,28 @@ impl ReportDescriptor {
     /// than truncating, since truncating could invent a plausible ID.
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         let items = walk(bytes)?;
-        todo!()
+        let mut usage_pages = Vec::new();
+        let mut report_ids = Vec::new();
+        for item in &items {
+            if item.item_type == TYPE_GLOBAL && item.tag == TAG_USAGE_PAGE {
+                let page = item.value as u16;
+                if !usage_pages.contains(&page) {
+                    usage_pages.push(page);
+                }
+            }
+            if item.item_type == TYPE_GLOBAL && item.tag == TAG_REPORT_ID {
+                let report = u8::try_from(item.value).map_err(|_| {
+                    Error::invalid("report descriptor", format!("report id {} does not fir a byte", item.value))
+            })?;
+                report_ids.push(report);
+            }
+        }
+        report_ids.sort_unstable();
+        report_ids.dedup();
+        Ok(Self{ 
+            usage_pages, 
+            report_ids 
+        })
     }
 
     pub fn usage_pages(&self) -> &[u16] {

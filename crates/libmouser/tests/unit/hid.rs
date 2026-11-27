@@ -5,6 +5,10 @@
 //! `pub`. Cargo only auto-discovers `tests/*.rs` and `tests/*/main.rs`, so
 //! this file is never built as a standalone integration test.
 
+use std::io::Write;
+use std::os::fd::FromRawFd;
+use std::time::Instant;
+
 use super::*;
 
 /// The expected opcodes are an **external** oracle: they were printed by a C
@@ -205,6 +209,262 @@ fn the_descriptor_struct_fits_the_ioctl_size_field() {
     let req = ioc(IOC_READ, HID, 0x02, size_of::<HidrawReportDescriptor>() as u32);
     let encoded_size = (req >> IOC_SIZESHIFT) & IOC_SIZE_MAX;
     assert_eq!(encoded_size, 4100);
+}
+
+// ------------------------------------------------- poll_timeout_ms ---
+
+/// The whole point of the saturation, stated once: `poll` reads a negative
+/// timeout as "block forever". Every other assertion in this section is a
+/// variation on not producing one.
+#[test]
+fn a_poll_timeout_is_never_negative() {
+    let cases = [
+        Duration::ZERO,
+        Duration::from_nanos(1),
+        Duration::from_micros(999),
+        Duration::from_millis(1),
+        Duration::from_secs(1),
+        Duration::from_secs(60 * 60 * 24 * 365),
+        Duration::from_millis(u64::from(u32::MAX)),
+        Duration::MAX,
+    ];
+
+    for remaining in cases {
+        let ms = poll_timeout_ms(remaining);
+        assert!(
+            ms >= 0,
+            "{remaining:?} produced {ms}, and poll reads a negative timeout as infinite"
+        );
+    }
+}
+
+/// Literal milliseconds, not a round trip through `Duration`.
+#[test]
+fn a_poll_timeout_converts_whole_milliseconds_exactly() {
+    let cases: [(Duration, libc::c_int); 5] = [
+        (Duration::ZERO, 0),
+        (Duration::from_millis(1), 1),
+        (Duration::from_millis(20), 20),
+        (Duration::from_millis(1000), 1000),
+        (Duration::from_secs(60), 60_000),
+    ];
+
+    for (remaining, want) in cases {
+        assert_eq!(poll_timeout_ms(remaining), want, "{remaining:?}");
+    }
+}
+
+/// `as_millis()` is `u128`; `c_int` is 32 bits. The cast wraps, and roughly
+/// half of what it wraps to is negative. 24.8 days is the hinge.
+#[test]
+fn a_poll_timeout_saturates_instead_of_wrapping() {
+    // The largest value the field holds, and the first one past it.
+    assert_eq!(
+        poll_timeout_ms(Duration::from_millis(libc::c_int::MAX as u64)),
+        libc::c_int::MAX,
+        "the exact maximum must survive"
+    );
+    assert_eq!(
+        poll_timeout_ms(Duration::from_millis(libc::c_int::MAX as u64 + 1)),
+        libc::c_int::MAX,
+        "one millisecond past the maximum must clamp, not wrap"
+    );
+    assert_eq!(
+        poll_timeout_ms(Duration::MAX),
+        libc::c_int::MAX,
+        "the largest Duration there is"
+    );
+
+    // What a plain cast would have done to a year, for the record: this is the
+    // value the clamp exists to avoid, computed independently of the function.
+    let a_year_in_ms = Duration::from_secs(60 * 60 * 24 * 365).as_millis();
+    assert_eq!(a_year_in_ms, 31_536_000_000);
+    assert!(
+        (a_year_in_ms as u32) as i32 > 0,
+        "sanity: a year does not itself wrap negative"
+    );
+    assert_eq!(poll_timeout_ms(Duration::from_secs(60 * 60 * 24 * 365)), libc::c_int::MAX);
+}
+
+/// A sub-millisecond remainder truncates to zero. Either answer is defensible
+/// — 0 gives up at most a millisecond early, 1 waits at most a millisecond
+/// long — but it must not become `-1`, which is the one value `poll` treats as
+/// a licence to block indefinitely.
+#[test]
+fn a_sub_millisecond_remainder_does_not_become_infinite() {
+    for remaining in [Duration::from_nanos(1), Duration::from_micros(500), Duration::from_micros(999)] {
+        let ms = poll_timeout_ms(remaining);
+        assert!(
+            ms == 0 || ms == 1,
+            "{remaining:?} produced {ms}; a sub-millisecond wait is 0 or 1, never anything else"
+        );
+    }
+}
+
+// --------------------------------------- read_input_report_timeout ---
+
+/// A pipe is the ideal stand-in for a node that never answers: a real fd that
+/// `poll` will happily wait on and that nothing ever makes readable.
+fn pipe() -> (File, File) {
+    let mut fds = [-1 as libc::c_int; 2];
+    let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+    assert_eq!(rc, 0, "pipe(2): {}", std::io::Error::last_os_error());
+
+    // SAFETY: `pipe` succeeded, so both are fresh owned fds and nothing else
+    // holds them.
+    unsafe { (File::from_raw_fd(fds[0]), File::from_raw_fd(fds[1])) }
+}
+
+/// Wrap a readable fd as a device. `HidrawDevice::open` cannot be used here —
+/// it issues `HIDIOCGRAWINFO`, which a pipe answers with `ENOTTY`.
+fn fake_node(read_end: File, path: &str) -> HidrawDevice {
+    HidrawDevice::from_parts(
+        read_end,
+        path,
+        HidInfo {
+            bus: BusType::Usb,
+            vendor: 0x046d,
+            product: 0xc08b,
+            name: "not a real device".to_string(),
+            phys: "test".to_string(),
+        },
+    )
+}
+
+#[test]
+fn a_report_that_never_arrives_times_out() {
+    // `_writer` must stay bound for the whole test: dropping it closes the
+    // write end, and the read end then polls ready with POLLHUP rather than
+    // waiting. That is a different test, below.
+    let (reader, _writer) = pipe();
+    let mut dev = fake_node(reader, "/dev/hidraw-silent");
+    let mut buf = [0u8; 20];
+
+    let started = Instant::now();
+    let err = dev
+        .read_input_report_timeout(&mut buf, Duration::from_millis(100))
+        .expect_err("nothing is ever written to this pipe");
+    let elapsed = started.elapsed();
+
+    match err {
+        Error::Timeout { path, waited } => {
+            assert_eq!(
+                path.to_str(),
+                Some("/dev/hidraw-silent"),
+                "the error should name the node, since two look alike"
+            );
+            assert_eq!(waited, Duration::from_millis(100), "the deadline asked for");
+        }
+        other => panic!("expected Error::Timeout, got {other:?}"),
+    }
+
+    assert!(
+        elapsed >= Duration::from_millis(100),
+        "gave up after {elapsed:?}, before the 100ms deadline"
+    );
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "took {elapsed:?} to honour a 100ms deadline"
+    );
+}
+
+#[test]
+fn a_report_already_buffered_is_read_without_waiting() {
+    let (reader, mut writer) = pipe();
+    // A real HID++ long reply, for shape only.
+    writer.write_all(&[0x11, 0xff, 0x00, 0x1a]).expect("write");
+
+    let mut dev = fake_node(reader, "/dev/hidraw-buffered");
+    let mut buf = [0u8; 20];
+
+    let started = Instant::now();
+    let n = dev
+        .read_input_report_timeout(&mut buf, Duration::from_secs(30))
+        .expect("a report was already waiting");
+    let elapsed = started.elapsed();
+
+    assert_eq!(n, 4);
+    assert_eq!(&buf[..4], &[0x11, 0xff, 0x00, 0x1a]);
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "waited {elapsed:?} for a report that was already there"
+    );
+}
+
+#[test]
+fn a_report_that_arrives_late_is_still_read() {
+    let (reader, mut writer) = pipe();
+    let writing = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(50));
+        writer.write_all(&[0x10, 0xff, 0x00, 0x1a]).expect("write");
+    });
+
+    let mut dev = fake_node(reader, "/dev/hidraw-slow");
+    let mut buf = [0u8; 20];
+
+    let started = Instant::now();
+    let n = dev
+        .read_input_report_timeout(&mut buf, Duration::from_secs(30))
+        .expect("the report arrives well inside the deadline");
+    let elapsed = started.elapsed();
+
+    assert_eq!(n, 4);
+    assert_eq!(&buf[..4], &[0x10, 0xff, 0x00, 0x1a]);
+    assert!(
+        elapsed >= Duration::from_millis(50),
+        "returned in {elapsed:?}, before the writer had written anything"
+    );
+
+    writing.join().expect("the writing thread panicked");
+}
+
+#[test]
+fn a_zero_timeout_polls_once_and_gives_up() {
+    let (reader, _writer) = pipe();
+    let mut dev = fake_node(reader, "/dev/hidraw-silent-now");
+    let mut buf = [0u8; 20];
+
+    let started = Instant::now();
+    let err = dev
+        .read_input_report_timeout(&mut buf, Duration::ZERO)
+        .expect_err("an empty pipe has nothing to read");
+    let elapsed = started.elapsed();
+
+    assert!(
+        matches!(err, Error::Timeout { .. }),
+        "expected Error::Timeout, got {err:?}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(100),
+        "a zero timeout took {elapsed:?}; it should poll once and return"
+    );
+}
+
+/// The `revents` trap. With the write end closed and no data buffered, `poll`
+/// returns ready with `POLLHUP` and `read` then returns 0. A caller cannot
+/// distinguish that `Ok(0)` from a zero-length report, so it has to be an
+/// error — on real hardware this is the mouse being unplugged mid-wait.
+#[test]
+fn a_hung_up_fd_is_an_error_not_a_zero_length_report() {
+    let (reader, writer) = pipe();
+    drop(writer);
+
+    let mut dev = fake_node(reader, "/dev/hidraw-unplugged");
+    let mut buf = [0u8; 20];
+
+    let started = Instant::now();
+    let result = dev.read_input_report_timeout(&mut buf, Duration::from_secs(30));
+    let elapsed = started.elapsed();
+
+    assert!(
+        result.is_err(),
+        "a hung-up fd returned {result:?}; POLLHUP must not read back as a report"
+    );
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "POLLHUP is immediate, but this took {elapsed:?} — the error bits are \
+         probably not being tested, so it waited out the deadline"
+    );
 }
 
 #[test]

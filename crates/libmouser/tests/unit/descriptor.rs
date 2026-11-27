@@ -73,8 +73,13 @@ const G502_MOUSE: [u8; 67] = [
     0x02, 0x95, 0x01, 0x81, 0x06, 0xc0, 0xc0,
 ];
 
+/// One captured interface: a name for failure messages, the descriptor bytes
+/// as read from sysfs, and the usage pages and report IDs an independent
+/// Python walker found in it.
+type Captured = (&'static str, &'static [u8], Vec<u16>, Vec<u8>);
+
 /// Every captured interface with what an independent walker found in it.
-fn captured() -> Vec<(&'static str, &'static [u8], Vec<u16>, Vec<u8>)> {
+fn captured() -> Vec<Captured> {
     vec![
         ("C-18 iface 0", &C18_MOUSE, vec![0x01, 0x09, 0x0c], vec![]),
         (
